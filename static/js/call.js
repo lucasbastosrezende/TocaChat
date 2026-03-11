@@ -51,8 +51,33 @@ window.handleIncomingSignal = async function (sinal) {
         }
     } else if (tipo === 'leave') {
         dismissIncomingCall();
+        if (isInCall) removeRemoteParticipant(remetente_id);
     } else if (tipo === 'decline') {
         showToast(`${caller?.nome || 'Usuário'} recusou a chamada.`, 'info');
+    } else if (tipo === 'state') {
+        updateRemoteParticipantState(remetente_id, dados);
+    }
+}
+
+function updateRemoteParticipantState(participantId, state) {
+    const videoNode = document.getElementById(`video-${participantId}`);
+    const avatarNode = document.getElementById(`avatar-${participantId}`);
+    if (!videoNode || !avatarNode || state.isCameraOn === undefined) return;
+
+    if (state.isCameraOn) {
+        videoNode.classList.remove('hidden');
+        avatarNode.classList.add('hidden');
+    } else {
+        videoNode.classList.add('hidden');
+        avatarNode.classList.remove('hidden');
+    }
+}
+
+function broadcastStateChange() {
+    if (!isInCall || !window.conversaAtual) return;
+    const others = window.conversaAtual.membros.filter(m => m.id !== currentUser.id);
+    for (const m of others) {
+        sendCallSignal(m.id, 'state', { isMuted: isMuted, isCameraOn: isCameraOn }, callSourceId);
     }
 }
 
@@ -87,16 +112,23 @@ function initPeer() {
 
     // Usa o ID do banco de dados como ID do Peer (facilita o p2p!)
     peer = new Peer(String(currentUser.id), {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
+        host: window.location.hostname,
+        port: 9000,
+        path: '/myapp',
+        secure: window.location.protocol === 'https:',
         config: customConfig,
         debug: 1
     });
 
     peer.on('open', (id) => {
         console.log('[PeerJS] Conectado ao servidor de sinalização. Meu ID:', id);
+    });
+
+    peer.on('disconnected', () => {
+        console.warn('[PeerJS] Desconectado do servidor de sinalização. Tentando reconectar...');
+        if (peer && !peer.destroyed) {
+            peer.reconnect();
+        }
     });
 
     // Recebendo ligação Mesh (Ponto a Ponto direta)
@@ -106,6 +138,9 @@ function initPeer() {
         if (isInCall && localStream) {
             call.answer(localStream);
             handleCallStream(call);
+            if (call.metadata) {
+                updateRemoteParticipantState(call.peer, call.metadata);
+            }
         } else {
             // Se eu não cliquei em Atender visualmente, o PeerJS fecha a stream surpresa
             // O Ringtone visual foi disparado pelo Socket, quando o user aceitar no botão,
@@ -127,7 +162,7 @@ function handleCallStream(call) {
 
     call.on('stream', (remoteStream) => {
         console.log('[PeerJS] Stream recebida ativamente do peer:', call.peer);
-        renderRemoteParticipant(call.peer, remoteStream);
+        renderRemoteParticipant(call.peer, remoteStream, call.metadata);
     });
 
     call.on('close', () => {
@@ -291,7 +326,7 @@ function updateGridLayout() {
     else if (count > 2) grid.classList.add('grid-n');
 }
 
-function renderRemoteParticipant(participantId, stream) {
+function renderRemoteParticipant(participantId, stream, metadata = null) {
     const grid = document.getElementById('remoteVideosGrid');
     if (!grid) return;
 
@@ -325,23 +360,26 @@ function renderRemoteParticipant(participantId, stream) {
 
     if (videoNode && stream) {
         videoNode.srcObject = stream;
-        
-        // Polling do estado do video P2P (já que eventos un/mute do navegador falham)
-        if (!container.dataset.intervalSet) {
-            container.dataset.intervalSet = 'true';
-            setInterval(() => {
-                if (!videoNode || !videoNode.srcObject) return;
-                const vTrack = videoNode.srcObject.getVideoTracks()[0];
-                if (vTrack && vTrack.enabled && vTrack.readyState === 'live') {
-                     videoNode.classList.remove('hidden');
-                     if(avatarNode) avatarNode.classList.add('hidden');
-                } else {
-                     videoNode.classList.add('hidden');
-                     if(avatarNode) avatarNode.classList.remove('hidden');
-                }
-            }, 1000);
-        }
         videoNode.onloadedmetadata = () => videoNode.play().catch(e=>console.warn(e));
+        
+        videoNode.classList.remove('hidden');
+        if (avatarNode) avatarNode.classList.add('hidden');
+        
+        if (metadata && metadata.isCameraOn === false) {
+            videoNode.classList.add('hidden');
+            if (avatarNode) avatarNode.classList.remove('hidden');
+        }
+
+        stream.getVideoTracks().forEach(track => {
+            track.onmute = () => {
+                videoNode.classList.add('hidden');
+                if (avatarNode) avatarNode.classList.remove('hidden');
+            };
+            track.onunmute = () => {
+                videoNode.classList.remove('hidden');
+                if (avatarNode) avatarNode.classList.add('hidden');
+            };
+        });
     }
 
     updateGridLayout();
@@ -397,7 +435,9 @@ async function joinCall() {
 
         // 2. Transmite meu vídeo para os outros na mesma porta do servidor WebRTC
         for (const m of others) {
-            const call = peer.call(String(m.id), localStream);
+            const call = peer.call(String(m.id), localStream, {
+                metadata: { isMuted: isMuted, isCameraOn: isCameraOn }
+            });
             if (call) {
                 handleCallStream(call);
             }
@@ -440,6 +480,7 @@ function toggleMute() {
     }
     updateControlsUI();
     updateLocalVideo();
+    broadcastStateChange();
 }
 
 async function toggleCamera() {
@@ -482,6 +523,7 @@ async function toggleCamera() {
 
         updateControlsUI();
         updateLocalVideo();
+        broadcastStateChange();
     } catch (e) {
         console.error('[WebRTC] Camera erro:', e);
         showToast('Erro ao alternar câmera', 'error');
