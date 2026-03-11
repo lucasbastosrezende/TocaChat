@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory, session, g  # type: ignore
 from flask_cors import CORS  # type: ignore
+from flask_socketio import SocketIO, emit, join_room, leave_room  # type: ignore
 from database import get_db, init_db  # type: ignore
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -15,6 +16,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = os.urandom(32)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
 CORS(app, supports_credentials=True)
+socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='eventlet')
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -628,7 +630,10 @@ def enviar_mensagem(id):
         LEFT JOIN usuarios ru ON r.usuario_id = ru.id
         WHERE m.id = ?
     ''', (cursor.lastrowid,)).fetchone()
-    return jsonify(dict(msg)), 201
+    msg_dict = dict(msg)
+    # Notify socket room
+    socketio.emit('new_message', msg_dict, room=f"conv_{id}")
+    return jsonify(msg_dict), 201
 
 
 @app.route('/api/chat/sync', methods=['GET'])
@@ -812,12 +817,13 @@ def send_signal():
     if not destinatario_id or not tipo or dados is None:
         return jsonify({'erro': 'Dados incompletos'}), 400
 
-    db = get_db_g()
-    db.execute('''
-        INSERT INTO sinais_call (conversa_id, remetente_id, destinatario_id, tipo, dados)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (conversa_id, uid, destinatario_id, tipo, json.dumps(dados)))
-    db.commit()
+    # Signal via SocketIO
+    socketio.emit('call_signal', {
+        'remetente_id': uid,
+        'tipo': tipo,
+        'dados': dados,
+        'conversa_id': conversa_id
+    }, room=f"user_{destinatario_id}")
 
     return jsonify({'ok': True})
 
@@ -850,6 +856,9 @@ def deletar_mensagem(msg_id):
     
     db.execute('DELETE FROM mensagens WHERE id = ?', (msg_id,))
     db.commit()
+
+    socketio.emit('message_deleted', {'id': msg_id}, room=f"conv_{msg['conversa_id']}")
+
     return jsonify({'status': 'ok'}), 200
 
 
@@ -1334,8 +1343,35 @@ def atualizar_meta():
 
 
 # ══════════════════════════════════════════════
+#  SocketIO Events
+# ══════════════════════════════════════════════
+@socketio.on('join')
+def on_join(data):
+    user_id = session.get('usuario_id')
+    if not user_id: return
+    # Join user-specific room for signals
+    join_room(f"user_{user_id}")
+    
+    # Join conversation rooms
+    conv_id = data.get('conversa_id')
+    if conv_id:
+        join_room(f"conv_{conv_id}")
+
+@socketio.on('join_conv')
+def on_join_conv(data):
+    conv_id = data.get('conversa_id')
+    if conv_id:
+        join_room(f"conv_{conv_id}")
+
+@socketio.on('leave_conv')
+def on_leave_conv(data):
+    conv_id = data.get('conversa_id')
+    if conv_id:
+        leave_room(f"conv_{conv_id}")
+
+# ══════════════════════════════════════════════
 #  Iniciar o servidor
 # ══════════════════════════════════════════════
 if __name__ == '__main__':
-    print("TocaDoConhecimento rodando em http://localhost:3000")
-    app.run(host='0.0.0.0', port=3000, debug=False)
+    print("TocaDoConhecimento rodando em http://localhost:3000 (com WebSockets)")
+    socketio.run(app, host='0.0.0.0', port=3000, debug=False)

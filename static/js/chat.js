@@ -10,6 +10,68 @@ let subtopicos = [];
 let subtopicAtual = null; // null = "Geral"
 let replyState = null; // { id, author, text }
 
+// ── SocketIO Init ──
+const socket = io();
+
+socket.on('connect', () => {
+    console.log('[Socket] Conectado ao servidor');
+    if (typeof currentUser !== 'undefined' && currentUser) {
+        socket.emit('join', { user_id: currentUser.id });
+        if (conversaAtual) socket.emit('join_conv', { conversa_id: conversaAtual.id });
+    }
+});
+
+socket.on('new_message', (msg) => {
+    console.log('[Socket] Nova mensagem recebida:', msg);
+    if (!conversaAtual || msg.conversa_id !== conversaAtual.id) {
+        incrementUnread(msg.conversa_id);
+        const conv = conversas.find(c => c.id === msg.conversa_id);
+        notifyNewMessageFromConv({ 
+            id: msg.conversa_id, 
+            display_nome: conv ? conv.display_nome : msg.autor_nome, 
+            ultima_msg: msg.conteudo 
+        });
+        return;
+    }
+    
+    // Check if subtopic match
+    if (msg.subtopico_id == (subtopicAtual ? subtopicAtual.id : null)) {
+        renderSingleMessage(msg);
+        if (msg.id > lastMsgId) lastMsgId = msg.id;
+        
+        const container = document.getElementById('chatMessages');
+        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
+        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+    }
+});
+
+socket.on('message_deleted', (data) => {
+    const bubble = document.querySelector(`.msg-bubble[data-msg-id="${data.id}"]`);
+    if (bubble) {
+        bubble.style.opacity = '0';
+        bubble.style.transform = 'scale(0.8)';
+        setTimeout(() => bubble.remove(), 350);
+    }
+});
+
+socket.on('pinned_update', (data) => {
+    if (conversaAtual && data.conversa_id === conversaAtual.id) {
+        loadConversas().then(() => {
+            const refreshed = conversas.find(c => c.id === conversaAtual.id);
+            if (refreshed) {
+                conversaAtual = refreshed;
+                renderPinnedMessageBar();
+            }
+        });
+    }
+});
+
+socket.on('call_signal', (sinal) => {
+    if (typeof handleIncomingSignal === 'function') {
+        handleIncomingSignal(sinal);
+    }
+});
+
 window.addEventListener('pageChange', (e) => {
     if (e.detail.page === 'chat') {
         // Just make sure we are polling
@@ -89,7 +151,9 @@ function renderConversasList() {
 async function abrirConversa(id) {
     const conv = conversas.find(c => c.id === id);
     if (!conv) return;
+    if (conversaAtual) socket.emit('leave_conv', { conversa_id: conversaAtual.id });
     conversaAtual = conv;
+    socket.emit('join_conv', { conversa_id: id });
     lastMsgId = 0;
     subtopicAtual = null;
     subtopicos = [];
@@ -910,19 +974,15 @@ let syncInterval = null;
 let isSyncing = false; // FIX: guard contra concorrência
 
 async function startSyncPolling() {
-    stopSyncPolling(); // FIX: Garante que só existe UM loop ativo
+    // Polling is now disabled in favor of SocketIO
+    // But we still poll for conversation list and callers occasionally (less frequently)
     performSyncLoop();
 }
 
 async function performSyncLoop() {
     await performSync();
-    
-    // Higher polling frequency (800ms) to ensure call alerts and messages arrive fast.
-    // In-call polling is even faster (500ms) to keep participant status sync'd.
-    const isInCall = window.isInCall || false;
-    const interval = isInCall ? 500 : 800;
-    
-    syncInterval = setTimeout(performSyncLoop, interval);
+    // 5 second polling for non-critical state (conversations list, active callers)
+    syncInterval = setTimeout(performSyncLoop, 5000); 
 }
 
 function stopSyncPolling() {
@@ -930,26 +990,16 @@ function stopSyncPolling() {
         clearTimeout(syncInterval);
         syncInterval = null;
     }
-    isSyncing = false;
 }
 
 async function performSync() {
-    // FIX: Se já existe um sync em andamento, pula esta rodada
-    if (isSyncing) {
-        console.warn('[Sync] Skipping — previous sync still running');
-        return;
-    }
+    if (isSyncing) return;
     isSyncing = true;
 
     try {
         let url = `/api/chat/sync?after_id=${lastMsgId}`;
         if (conversaAtual) url += `&conversa_id=${conversaAtual.id}`;
-        if (subtopicAtual) url += `&subtopico_id=${subtopicAtual.id}`;
-        if (window.isInCall && window.callSourceId) {
-            url += `&active_call_id=${window.callSourceId}`;
-            url += `&has_video=${window.isCameraOn ? '1' : '0'}`;
-        }
-
+        
         const data = await api(url);
         
         // 1. Update Conversations
@@ -957,97 +1007,16 @@ async function performSync() {
             conversas = data.conversas;
             window.conversas = conversas;
             renderConversasList();
-            
-            if (conversaAtual) {
-                const refreshed = conversas.find(c => c.id === conversaAtual.id);
-                if (refreshed) {
-                    conversaAtual = refreshed;
-                    window.conversaAtual = refreshed;
-                    renderPinnedMessageBar();
-                }
-            }
         }
 
-        // 2. Update Messages
-        if (data.mensagens && data.mensagens.length > 0) {
-            const container = document.getElementById('chatMessages');
-            const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
-
-            data.mensagens.forEach(msg => {
-                renderSingleMessage(msg);
-                if (msg.id > lastMsgId) lastMsgId = msg.id;
-                
-                // Notification: only for messages from OTHER users
-                if (msg.usuario_id !== currentUser.id) {
-                    notifyNewMessage(msg, conversaAtual);
-                }
-            });
-
-            if (wasAtBottom) {
-                container.scrollTop = container.scrollHeight;
-            }
-            document.querySelector('.empty-state')?.remove();
-        }
-
-        // 2b. Detect new messages in OTHER conversations (via conversation list changes)
-        if (data.conversas && data.conversas.length > 0) {
-            data.conversas.forEach(c => {
-                if (conversaAtual && c.id === conversaAtual.id) return; // Skip current conv
-                const prev = conversas.find(p => p.id === c.id);
-                if (prev && c.ultima_msg && c.ultima_msg !== prev.ultima_msg) {
-                    // New message in another conversation
-                    incrementUnread(c.id);
-                    // Try to build minimal msg object for notification
-                    notifyNewMessageFromConv(c);
-                }
-            });
-        }
-
-        // 3. Process Call Signals GLOBALLY
-        if (data.sinais && data.sinais.length > 0) {
-            data.sinais.forEach(sinal => {
-                if (typeof handleIncomingSignal === 'function') {
-                    try {
-                        handleIncomingSignal(sinal);
-                    } catch (e) {
-                        console.error('[Sync] Error processing signal:', e);
-                    }
-                }
-            });
-        }
-        
-        // 4. Process Active Callers
+        // 2. Active Callers
         if (data.active_callers !== undefined) {
             updateActiveCallersUI(data.active_callers);
         }
-
-        // 5. Process Deleted Messages
-        if (data.deleted_ids && data.deleted_ids.length > 0) {
-            data.deleted_ids.forEach(id => {
-                // Seleção mais robusta buscando em todo o container de mensagens
-                const bubble = document.querySelector(`.msg-bubble[data-msg-id="${id}"]`);
-                if (bubble) {
-                    bubble.style.transition = 'opacity 0.3s, transform 0.3s';
-                    bubble.style.opacity = '0';
-                    bubble.style.transform = 'scale(0.8)';
-                    bubble.style.pointerEvents = 'none';
-                    setTimeout(() => {
-                        if (bubble.parentNode) bubble.remove();
-                    }, 350);
-                }
-            });
-        }
     } catch (err) {
-        // FIX: Se for 401 (sessão expirada), para o polling completamente.
-        // showAuthScreen() já foi chamado pelo api(), só precisamos parar o loop.
-        if (err.message === 'Não autenticado') {
-            console.warn('[Sync] Sessão expirada — parando polling.');
-            stopSyncPolling();
-            return;
-        }
-        console.error('Sync error:', err);
+        if (err.message === 'Não autenticado') stopSyncPolling();
     } finally {
-        isSyncing = false; // FIX: Sempre libera o flag, mesmo com erro
+        isSyncing = false;
     }
 }
 
