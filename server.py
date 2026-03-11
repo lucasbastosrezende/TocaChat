@@ -348,6 +348,35 @@ def listar_conversas():
     return jsonify(result)
 
 
+@app.route('/api/conversas/<int:id>', methods=['GET'])
+@login_required
+def obter_conversa(id):
+    """Retorna uma única conversa com membros (para sinal de chamada quando ainda não está em window.conversas)."""
+    uid = get_user_id()
+    db = get_db_g()
+    conv = db.execute(
+        'SELECT c.* FROM conversas c JOIN conversa_membros cm ON c.id = cm.conversa_id WHERE c.id = ? AND cm.usuario_id = ?',
+        (id, uid)
+    ).fetchone()
+    if not conv:
+        return jsonify({'erro': 'Conversa não encontrada'}), 404
+    conv = dict(conv)
+    membros_raw = db.execute('''
+        SELECT u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
+        FROM conversa_membros cm JOIN usuarios u ON cm.usuario_id = u.id
+        WHERE cm.conversa_id = ?
+    ''', (id,)).fetchall()
+    conv['membros'] = [dict(m) for m in membros_raw]
+    if conv['tipo'] == 'direto':
+        other = [m for m in conv['membros'] if m['id'] != uid]
+        conv['display_nome'] = other[0]['nome'] if other else 'Chat'
+        conv['display_foto'] = other[0]['foto'] or '' if other else ''
+    else:
+        conv['display_nome'] = conv.get('nome') or 'Grupo'
+        conv['display_foto'] = conv.get('foto') or ''
+    return jsonify(conv)
+
+
 @app.route('/api/conversas/direto', methods=['POST'])
 @login_required
 def criar_conversa_direta():

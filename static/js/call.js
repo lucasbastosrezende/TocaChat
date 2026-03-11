@@ -54,26 +54,51 @@ async function sendCallSignal(destId, tipo, dados, convId = null) {
 }
 
 window.handleIncomingSignal = async function (sinal) {
-    const { remetente_id, tipo, dados, conversa_id } = sinal;
+    let { remetente_id, tipo, dados, conversa_id } = sinal;
+    dados = dados || {};
     console.log('[Call] Módulo de Alerta WebRTC Recebeu Sinal:', tipo, 'da conversa', conversa_id);
 
-    const callConv = (window.conversas || []).find(c => c.id == conversa_id);
+    let callConv = (window.conversas || []).find(c => c.id == conversa_id);
+    if (!callConv && tipo === 'join') {
+        try {
+            const fetched = await api(`/api/conversas/${conversa_id}`);
+            if (fetched) {
+                if (!window.conversas) window.conversas = [];
+                if (!window.conversas.find(c => c.id == conversa_id)) {
+                    window.conversas.push(fetched);
+                }
+                callConv = fetched;
+            }
+        } catch (e) {
+            console.warn('[Call] Conversa não encontrada para sinal de chamada:', conversa_id);
+            return;
+        }
+    }
     if (!callConv) return;
-    const caller = callConv.membros?.find(m => m.id == remetente_id);
+
+    const caller = callConv.membros?.find(m => String(m.id) === String(remetente_id));
+    const callerFallback = {
+        id: remetente_id,
+        nome: dados.callerName || 'Usuário',
+        foto: dados.callerPhoto || null
+    };
+    const resolvedCaller = caller || callerFallback;
 
     if (tipo === 'join') {
+        markParticipantInCall(remetente_id, true);
         if (!isInCall) {
-            if (caller) showIncomingCallAlert(callConv, caller, dados);
+            showIncomingCallAlert(callConv, resolvedCaller, dados);
         }
     } else if (tipo === 'leave') {
+        markParticipantInCall(remetente_id, false);
         dismissIncomingCall();
         if (isInCall) removeRemoteParticipant(remetente_id);
     } else if (tipo === 'decline') {
-        showToast(`${caller?.nome || 'Usuário'} recusou a chamada.`, 'info');
+        markParticipantInCall(remetente_id, false);
+        showToast(`${resolvedCaller.nome} recusou a chamada.`, 'info');
     } else if (tipo === 'state') {
         updateRemoteParticipantState(remetente_id, dados);
     } else if (tipo === 'in_call') {
-        // Task 1: indicador de participante em chamada na sidebar
         markParticipantInCall(dados.userId, true);
     } else if (tipo === 'call_ended') {
         markParticipantInCall(dados.userId, false);
@@ -110,60 +135,52 @@ const CALL_BADGE_SVG = '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-
 function markParticipantInCall(userId, isActive) {
     if (userId == null || userId === undefined) return;
     const id = String(userId);
-    const list = document.getElementById('participantsList');
-    if (!list) return;
-    // Busca por data-member-id (sidebar) — defensivo: falha silenciosa se não achar
-    let el = list.querySelector(`[data-member-id="${id}"]`);
-    if (!el) return;
-
     if (isActive) {
         usersInCall.add(id);
-        el.classList.add('member-in-call');
-        let badge = document.getElementById(`call-badge-${id}`);
-        if (!badge) {
-            badge = document.createElement('span');
-            badge.className = 'call-status-badge';
-            badge.id = `call-badge-${id}`;
-            badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">${CALL_BADGE_SVG}</svg> Em chamada`;
-            const info = el.querySelector('.participant-info');
-            if (info) info.appendChild(badge);
-        }
-        list.insertBefore(el, list.firstChild);
     } else {
         usersInCall.delete(id);
-        el.classList.remove('member-in-call');
-        const badge = document.getElementById(`call-badge-${id}`);
-        if (badge) badge.remove();
-        // Restaurar ordem natural: reordena pela lógica da lista (ordem alfabética)
-        if (typeof window.renderParticipantsSidebar === 'function' && window.conversaAtual) {
-            window.renderParticipantsSidebar(window.conversaAtual);
-            if (typeof window.reapplyParticipantsInCall === 'function') {
-                window.reapplyParticipantsInCall();
-            }
-        }
+    }
+    _applyCallBadge(id, isActive);
+    if (!isActive && typeof window.renderParticipantsSidebar === 'function' && window.conversaAtual) {
+        window.renderParticipantsSidebar(window.conversaAtual);
+        reapplyCallBadges();
     }
 }
 
-// Reaplica badge/class para todos em usersInCall após re-render da lista (ex.: troca de conversa)
-window.reapplyParticipantsInCall = function reapplyParticipantsInCall() {
+function _applyCallBadge(userId, isActive) {
     const list = document.getElementById('participantsList');
-    if (!list) return;
-    usersInCall.forEach((id) => {
-        const el = list.querySelector(`[data-member-id="${id}"]`);
-        if (!el) return;
+    const el = list ? list.querySelector(`[data-member-id="${userId}"]`) : document.querySelector(`[data-member-id="${userId}"], [data-user-id="${userId}"], #member-${userId}`);
+    if (!el) return;
+
+    const badgeId = `call-badge-${userId}`;
+
+    if (isActive) {
         el.classList.add('member-in-call');
-        let badge = document.getElementById(`call-badge-${id}`);
-        if (!badge) {
-            badge = document.createElement('span');
-            badge.className = 'call-status-badge';
-            badge.id = `call-badge-${id}`;
-            badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">${CALL_BADGE_SVG}</svg> Em chamada`;
-            const info = el.querySelector('.participant-info');
-            if (info) info.appendChild(badge);
+        const parent = el.parentElement;
+        if (parent && el !== parent.firstElementChild) {
+            parent.insertBefore(el, parent.firstElementChild);
         }
-        list.insertBefore(el, list.firstChild);
-    });
-};
+        if (!document.getElementById(badgeId)) {
+            const badge = document.createElement('span');
+            badge.className = 'call-status-badge';
+            badge.id = badgeId;
+            badge.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">${CALL_BADGE_SVG}</svg> Em chamada`;
+            const nameEl = el.querySelector('.participant-name') || el.querySelector('.member-name') || el.querySelector('.participant-info');
+            if (nameEl) nameEl.insertAdjacentElement('afterend', badge);
+            else el.appendChild(badge);
+        }
+    } else {
+        el.classList.remove('member-in-call');
+        const badge = document.getElementById(badgeId);
+        if (badge) badge.remove();
+    }
+}
+
+function reapplyCallBadges() {
+    usersInCall.forEach(userId => _applyCallBadge(userId, true));
+}
+window.reapplyCallBadges = reapplyCallBadges;
+window.reapplyParticipantsInCall = reapplyCallBadges;
 
 // ══════════════════════════════════════════════
 //  PeerJS Init & Mesh Flow (FIX: backoff + max retry + pendingCalls)
@@ -303,13 +320,26 @@ function _createPeer() {
 }
 
 function handleCallStream(call) {
-    if (activeCalls[call.peer]) {
-        activeCalls[call.peer].close(); // limpa fantasmas
+    const key = String(call.peer);
+    if (activeCalls[key]) {
+        activeCalls[key].close(); // limpa fantasmas
     }
-    activeCalls[call.peer] = call;
+    activeCalls[key] = call;
 
     call.on('stream', (remoteStream) => {
         console.log('[PeerJS] Stream recebida ativamente do peer:', call.peer);
+        const trackCount = remoteStream.getTracks().length;
+        if (trackCount === 0) {
+            console.warn('[PeerJS] Stream sem tracks do peer', call.peer, '— fechando e tentando novamente em 2s');
+            call.close();
+            setTimeout(() => {
+                if (isInCall && localStream && peer) {
+                    const c = peer.call(String(call.peer), localStream, { metadata: { isMuted, isCameraOn } });
+                    if (c) handleCallStream(c);
+                }
+            }, 2000);
+            return;
+        }
         renderRemoteParticipant(call.peer, remoteStream, call.metadata);
     });
 
@@ -542,13 +572,14 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
 }
 
 function removeRemoteParticipant(participantId) {
+    const key = String(participantId);
     const container = document.getElementById(`participant-${participantId}`);
     if (container) {
         container.remove();
         updateGridLayout();
     }
-    if (activeCalls[participantId]) {
-        delete activeCalls[participantId];
+    if (activeCalls[key]) {
+        delete activeCalls[key];
     }
 }
 
@@ -558,12 +589,17 @@ function removeRemoteParticipant(participantId) {
 async function joinCall() {
     if (isInCall) return;
 
+    callSourceId = window.conversaAtual?.id ?? null;
+    window.callSourceId = callSourceId;
+    if (!callSourceId) {
+        showToast('Erro: conversa não identificada para iniciar chamada.', 'error');
+        return;
+    }
+
     isInCall = true;
     window.isInCall = true;
     isMuted = false;
     isCameraOn = false; window.isCameraOn = false;
-    callSourceId = window.conversaAtual ? window.conversaAtual.id : null;
-    window.callSourceId = callSourceId;
 
     if (!peer) initPeer();
 
@@ -571,7 +607,7 @@ async function joinCall() {
     updateCallStatusText('Conectando dispositivos...');
 
     const hasMedia = await getLocalMedia();
-    if (!hasMedia) {
+    if (!hasMedia || !localStream) {
         showToast('Não foi possível acessar a câmera e microfone.', 'error');
         endCall(false);
         return;
@@ -586,34 +622,42 @@ async function joinCall() {
     const conv = window.conversaAtual;
     if (conv) {
         const others = conv.membros.filter(m => m.id !== currentUser.id);
+        const myIdNum = Number(currentUser.id);
 
         // Task 1: broadcast in_call para todos os membros
         for (const m of others) {
             await sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
         }
 
-        // 1. Avisa os outros que estou ligando (Sinal Visual)
+        // 1. Avisa os outros que estou ligando (Sinal Visual) — inclui nome/foto para quem não tem a conversa carregada
         for (const m of others) {
-            await sendCallSignal(m.id, 'join', {}, callSourceId);
+            await sendCallSignal(m.id, 'join', {
+                callerName: currentUser.nome,
+                callerPhoto: currentUser.foto || null,
+                convName: conv.nome || null,
+                convTipo: conv.tipo
+            }, callSourceId);
         }
 
-        // 2. Transmite meu vídeo para os outros na mesma porta do servidor WebRTC
+        // 2. FIX: só o peer com ID numérico MENOR inicia a chamada; o maior apenas responde em peer.on('call')
         for (const m of others) {
+            const remoteIdNum = Number(m.id);
+            if (isNaN(myIdNum) || isNaN(remoteIdNum) || myIdNum >= remoteIdNum) continue;
             const call = peer.call(String(m.id), localStream, {
                 metadata: { isMuted: isMuted, isCameraOn: isCameraOn }
             });
-            if (call) {
-                handleCallStream(call);
-            }
+            if (call) handleCallStream(call);
         }
     }
     if (window.performSync) window.performSync();
 }
 
 async function endCall(sendSignal = true) {
+    // FIX: remove indicador "em chamada" no topo para que a UI atualize antes de qualquer teardown
+    markParticipantInCall(currentUser.id, false);
+
     if (sendSignal && isInCall && window.conversaAtual) {
         const others = window.conversaAtual.membros.filter(m => m.id !== currentUser.id);
-        // Task 1: broadcast call_ended para todos os membros
         for (const m of others) {
             await sendCallSignal(m.id, 'call_ended', { userId: currentUser.id }, callSourceId);
         }
@@ -621,9 +665,6 @@ async function endCall(sendSignal = true) {
             await sendCallSignal(m.id, 'leave', {}, callSourceId);
         }
     }
-
-    // Task 1: remove indicador local "em chamada"
-    markParticipantInCall(currentUser.id, false);
 
     // FIX: limpa estado de reconexão e fila de chamadas pendentes
     reconnectAttempts = 0;
