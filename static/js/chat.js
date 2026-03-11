@@ -10,6 +10,17 @@ let subtopicos = [];
 let subtopicAtual = null; // null = "Geral"
 let replyState = null; // { id, author, text }
 
+// ── Helpers & Utilities (Global Scope) ──
+const isEmojiOnly = (str) => {
+    const testStr = (str || '').trim();
+    if (!testStr) return false;
+    const emojiRegex = /^[\u{1f300}-\u{1f5ff}\u{1f900}-\u{1f9ff}\u{1f600}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{2600}-\u{26ff}\u{2700}-\u{27bf}\u{1f1e6}-\u{1f1ff}\u{1f191}-\u{1f251}\u{1f004}\u{1f0cf}\u{1f170}-\u{1f171}\u{1f17e}-\u{1f17f}\u{1f18e}\u{3030}\u{2b50}\u{2b55}\u{2934}-\u{2935}\u{2b05}-\u{2b07}\u{2b1b}-\u{2b1c}\u{3297}\u{3299}\u{303d}\u{00a9}\u{00ae}\u{2122}\u{23f3}\u{24c2}\u{23e9}-\u{23ef}\u{25b6}\u{23f8}-\u{23fa}\u{200d}\ufe0f]+$/gu;
+    const match = testStr.match(emojiRegex);
+    if(!match) return false;
+    const emojiCount = Array.from(testStr).length;
+    return emojiCount >= 1 && emojiCount <= 3;
+};
+
 // ── SocketIO Init ──
 const socket = io();
 
@@ -103,22 +114,6 @@ function renderConversasList() {
         container.innerHTML = '<p class="empty-state">Nenhuma conversa. Inicie um chat! 💬</p>';
         return;
     }
-    // Add helper to detect single emojis (1 to 3)
-    const isEmojiOnly = (str) => {
-        const testStr = (str || '').trim();
-        if (!testStr) return false;
-        // Emoji Regex (matches most common emojis + variations)
-        const emojiRegex = /^[\u{1f300}-\u{1f5ff}\u{1f900}-\u{1f9ff}\u{1f600}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{2600}-\u{26ff}\u{2700}-\u{27bf}\u{1f1e6}-\u{1f1ff}\u{1f191}-\u{1f251}\u{1f004}\u{1f0cf}\u{1f170}-\u{1f171}\u{1f17e}-\u{1f17f}\u{1f18e}\u{3030}\u{2b50}\u{2b55}\u{2934}-\u{2935}\u{2b05}-\u{2b07}\u{2b1b}-\u{2b1c}\u{3297}\u{3299}\u{303d}\u{00a9}\u{00ae}\u{2122}\u{23f3}\u{24c2}\u{23e9}-\u{23ef}\u{25b6}\u{23f8}-\u{23fa}\u{200d}\ufe0f]+$/gu;
-        
-        // Check if string matches only emojis and has length 1-3
-        const match = testStr.match(emojiRegex);
-        if(!match) return false;
-        
-        const emojiCount = Array.from(testStr).length; // Handle surrogate pairs better
-        return emojiCount >= 1 && emojiCount <= 3;
-    };
-
-    // parseAnimatedEmojis removed for performance optimization (using native emojis)
 
     container.innerHTML = conversas.map(c => {
         const isActive = conversaAtual && conversaAtual.id === c.id;
@@ -202,9 +197,10 @@ async function abrirConversa(id) {
     const editBtn = document.getElementById('btnEditGrupo');
     editBtn.classList.toggle('hidden', conv.tipo !== 'grupo');
 
-    const subBar = document.getElementById('subtopicsBar');
+    // Parallel load data for faster opening
+    const promises = [loadMensagens()];
     if (conv.tipo === 'grupo') {
-        await loadSubtopicos();
+        promises.push(loadSubtopicos());
         subBar.classList.remove('hidden');
     } else {
         subBar.classList.add('hidden');
@@ -213,7 +209,8 @@ async function abrirConversa(id) {
     renderParticipantsSidebar(conv);
     renderConversasList();
     renderPinnedMessageBar();
-    await loadMensagens();
+    
+    await Promise.all(promises);
     document.getElementById('chatInput').focus();
 }
 
@@ -480,11 +477,9 @@ async function deletarSubtopico(id) {
 }
 
 
-// ══════════════════════════════════════════════
-//  Messages (id-based dedup, no more duplicates)
-// ══════════════════════════════════════════════
+// ── Messages (id-based dedup, no more duplicates)
 // ── Render Single Message ──
-function renderSingleMessage(msg, isOptimistic = false) {
+function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     const container = document.getElementById('chatMessages');
     const isMine = msg.usuario_id === currentUser.id;
     
@@ -557,6 +552,8 @@ function renderSingleMessage(msg, isOptimistic = false) {
         })() : ''}
         <div class="msg-time">${formatTime(msg.criado_em || new Date().toISOString())}${isOptimistic ? ' ⏳' : ''}</div>
     `;
+    
+    if (returnOnly) return bubble;
     container.appendChild(bubble);
     return bubble;
 }
@@ -585,12 +582,15 @@ async function loadMensagens() {
             container.innerHTML = '';
         }
 
+        const fragment = document.createDocumentFragment();
         msgs.forEach(msg => {
-            renderSingleMessage(msg);
+            const bubble = renderSingleMessage(msg, false, true); // true = return element only
+            if (bubble) fragment.appendChild(bubble);
             lastMsgId = msg.id;
         });
 
         if (msgs.length > 0) {
+            container.appendChild(fragment);
             container.scrollTop = container.scrollHeight;
         }
     } catch (err) {
