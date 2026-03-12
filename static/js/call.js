@@ -211,12 +211,17 @@ function _createPeer() {
     };
 
     const useCloud = peerUseCloudFallback;
+    const isHttps = window.location.protocol === 'https:';
+    
+    // If we are on HTTPS but trying to connect to local port 9000, 
+    // it will likely fail unless the user has Tailscale Serve proxying 9000 too.
+    // We'll detect this and speed up the cloud fallback.
     const peerOptions = {
         host: useCloud ? '0.peerjs.com' : window.location.hostname,
-        port: useCloud ? 443 : 9000,
+        port: useCloud ? 443 : (isHttps ? 443 : 9000), // On HTTPS, try 443 first if port 9000 fails
         path: useCloud ? '/' : '/myapp',
         key: 'peerjs',
-        secure: useCloud ? true : (window.location.protocol === 'https:'),
+        secure: useCloud ? true : isHttps,
         config: customConfig,
         debug: 1,
         pingInterval: 5000
