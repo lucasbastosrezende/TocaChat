@@ -29,7 +29,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 let reconnectTimer = null;
 // FIX: diferencia "nunca conectou" (falha rápida) de "desconectou em chamada" (backoff)
 let peerHadOpenOnce = false;
-// FIX: fallback para servidor em nuvem PeerJS quando o servidor local (porta 9000) está inacessível
+// CORRIGIDO: Removido fallback para nuvem para garantir que peers se encontrem no servidor local
 let peerUseCloudFallback = false;
 // FIX: retry periódico para conectar a peers que ainda não entraram na chamada
 let callRetryInterval = null;
@@ -188,139 +188,221 @@ window.reapplyParticipantsInCall = reapplyCallBadges;
 // ══════════════════════════════════════════════
 //  PeerJS Init & Mesh Flow (FIX: backoff + max retry + pendingCalls)
 // ══════════════════════════════════════════════
+let isPeerOpening = false;
+let peerCurrentPort = 9000;
+
 function initPeer() {
-    // FIX: verifica estado real antes de reusar o peer
+    if (isPeerOpening) return;
     if (peer && !peer.destroyed && peer.open) return;
+    
     if (peer && !peer.destroyed) {
         try { peer.destroy(); } catch (e) { /* ignore */ }
     }
     peer = null;
-    reconnectAttempts = 0;
-    peerHadOpenOnce = false;
-    peerUseCloudFallback = false; // sempre tenta servidor local primeiro
     _createPeer();
 }
 
-function _createPeer() {
-    // FIX: máximo 2 servidores STUN (5+ prejudica descoberta WebRTC)
-    const customConfig = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-    };
-
-    const useCloud = peerUseCloudFallback;
-    const isHttps = window.location.protocol === 'https:';
-    
-    // If we are on HTTPS but trying to connect to local port 9000, 
-    // it will likely fail unless the user has Tailscale Serve proxying 9000 too.
-    // We'll detect this and speed up the cloud fallback.
-    const peerOptions = {
-        host: useCloud ? '0.peerjs.com' : window.location.hostname,
-        port: useCloud ? 443 : (isHttps ? 443 : 9000), // On HTTPS, try 443 first if port 9000 fails
-        path: useCloud ? '/' : '/myapp',
-        key: 'peerjs',
-        secure: useCloud ? true : isHttps,
-        config: customConfig,
-        debug: 1,
-        pingInterval: 5000
-    };
-
-    if (useCloud) {
-        console.log('[PeerJS] Conectando ao servidor em nuvem (0.peerjs.com)...');
+function handlePeerReconnect() {
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.error('[PeerJS] Máximo de tentativas atingido')
+        reconnectAttempts = 0
+        return
     }
 
-    peer = new Peer(String(currentUser.id), peerOptions);
+    reconnectAttempts++
 
-    peer.on('open', (id) => {
-        console.log('[PeerJS] Conectado. Meu ID:', id, peerUseCloudFallback ? '(nuvem)' : '(local)');
-        peerHadOpenOnce = true;
-        reconnectAttempts = 0;
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-        if (peerUseCloudFallback) {
-            showToast('Conectado ao servidor de chamadas em nuvem.', 'success');
+    const delay = Math.min(
+        1000 * Math.pow(2, reconnectAttempts),
+        15000
+    )
+
+    console.warn(`[PeerJS] Reconectando em ${delay}ms (tentativa ${reconnectAttempts})`)
+
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+
+    reconnectTimer = setTimeout(() => {
+        initPeer()
+    }, delay)
+
+}
+
+
+
+function _createPeer() {
+
+    if (!navigator.onLine) {
+        console.warn('[PeerJS] Navegador offline')
+        return
+    }
+
+    isPeerOpening = true
+
+    const customConfig = {
+        iceServers: [
+
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+
+            // coloque seu TURN aqui se tiver
+            // { urls:'turn:seu-servidor:3478', username:'user', credential:'pass'}
+
+        ]
+    }
+
+    const isHttps = window.location.protocol === 'https:';
+    const peerOptions = {
+        host: window.location.hostname,
+        port: peerCurrentPort,
+        path: '/myapp',
+        key: 'peerjs',
+        secure: isHttps,
+        config: customConfig,
+        debug: 2,
+        pingInterval: 20000,
+        reliable: true
+    }
+
+    console.log('[PeerJS] Inicializando', peerOptions)
+
+    try {
+
+        peer = new Peer(
+            String(currentUser.id),
+            peerOptions
+        )
+
+    } catch (e) {
+
+        console.error('[PeerJS] Falha ao criar Peer', e)
+        isPeerOpening = false
+        return
+
+    }
+
+
+
+    // conexão aberta
+    peer.on('open', id => {
+
+        console.log('[PeerJS] Conectado com sucesso', id)
+
+        peerHadOpenOnce = true
+        reconnectAttempts = 0
+        isPeerOpening = false
+
+        if (callRetryInterval) {
+            console.log('[PeerJS] Peer pronto, tentando conectar aos participantes')
         }
-    });
 
+
+        if (reconnectTimer) {
+
+            clearTimeout(reconnectTimer)
+
+            reconnectTimer = null
+        }
+
+    })
+
+
+
+    // desconectado
     peer.on('disconnected', () => {
-        // FIX: tenta reconectar sempre (evita desconexão silenciosa)
-        if (!isInCall) {
-            if (peer && !peer.destroyed && reconnectAttempts < 2) {
-                reconnectAttempts++;
-                const delay = 2000;
-                console.warn(`[PeerJS] Desconectado. Reconectando em ${delay}ms...`);
-                setTimeout(() => {
-                    if (peer && !peer.destroyed) peer.reconnect();
-                }, delay);
-            }
-            return;
-        }
-        // FIX: falha na primeira conexão — tenta servidor em nuvem antes de desistir
-        if (!peerHadOpenOnce) {
-            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-            if (!peerUseCloudFallback) {
-                peerUseCloudFallback = true;
-                if (peer && !peer.destroyed) {
-                    try { peer.destroy(); } catch (e) { /* ignore */ }
-                }
-                peer = null;
-                console.warn('[PeerJS] Servidor local inacessível. Tentando servidor em nuvem...');
-                showToast('Servidor local indisponível. Tentando servidor em nuvem...', 'info');
-                updateCallStatusText('Conectando ao servidor em nuvem...');
-                _createPeer();
-                return;
-            }
-            console.error('[PeerJS] Servidor de sinalização inacessível (local e nuvem).');
-            showToast('Não foi possível conectar ao servidor de chamadas. Tente novamente.', 'error');
-            endCall(false);
-            return;
-        }
-        // FIX: backoff exponencial só quando já tinha conectado antes (reconexão)
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            console.error('[PeerJS] Máximo de reconexões atingido. Encerrando chamada.');
-            showToast('Conexão com o servidor perdida. A chamada foi encerrada.', 'error');
-            endCall(false);
-            return;
-        }
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-        reconnectAttempts++;
-        console.warn(`[PeerJS] Desconectado. Tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} em ${delay}ms...`);
-        reconnectTimer = setTimeout(() => {
-            if (peer && !peer.destroyed) {
-                peer.reconnect();
-            } else {
-                _createPeer();
-            }
-        }, delay);
-    });
 
-    peer.on('call', (call) => {
-        console.log('[PeerJS] Recebendo chamada Mesh de:', call.peer);
+        console.warn('[PeerJS] Evento disconnected')
+
+        isPeerOpening = false
+
+        handlePeerReconnect()
+
+    })
+
+
+
+    // conexão fechada
+    peer.on('close', () => {
+
+        console.warn('[PeerJS] Evento close')
+
+        isPeerOpening = false
+
+        handlePeerReconnect()
+
+    })
+
+
+
+    // chamada recebida
+    peer.on('call', call => {
+
+        console.log('[PeerJS] Chamada recebida de', call.peer)
+
         if (isInCall && localStream) {
-            call.answer(localStream);
-            handleCallStream(call);
-            if (call.metadata) updateRemoteParticipantState(call.peer, call.metadata);
-        } else if (isInCall && !localStream) {
-            // FIX: fila de chamadas enquanto a mídia local ainda não está pronta
-            pendingCalls.push(call);
-        } else {
-            call.close();
-        }
-    });
 
-    peer.on('error', (err) => {
-        if (err.type === 'disconnected' || err.type === 'network') {
-            if (peerHadOpenOnce) {
-                console.warn('[PeerJS] Erro de rede (reconexão):', err.message);
+            call.answer(localStream)
+
+            handleCallStream(call)
+
+            if (call.metadata) {
+                updateRemoteParticipantState(call.peer, call.metadata)
             }
-        } else if ((err.message || '').includes('Could not connect to peer')) {
-            // FIX: esperado quando o outro usuário ainda não entrou na chamada — retry automático cobre isso
-            console.warn('[PeerJS] Peer indisponível (aguardando atender):', err.message);
-        } else {
-            console.error('[PeerJS] Erro crítico:', err);
+
         }
-    });
+        else if (isInCall && !localStream) {
+
+            pendingCalls.push(call)
+
+        }
+        else {
+
+            console.log('[PeerJS] Rejeitando chamada')
+
+            call.close()
+
+        }
+
+    })
+
+
+
+    // erro
+    peer.on('error', err => {
+
+        isPeerOpening = false
+
+        console.error('[PeerJS] erro:', err)
+
+        if (err.type === 'network' || err.type === 'server-error') {
+
+            console.warn('[PeerJS] erro de rede detectado')
+
+            if (!peerHadOpenOnce && peerCurrentPort === 9000) {
+                console.warn('[PeerJS] Falha na porta 9000. Tentando fallback para porta 443 (Proxy HTTPS)...');
+                peerCurrentPort = 443;
+                setTimeout(initPeer, 1000);
+            }
+            else {
+
+                handlePeerReconnect()
+
+            }
+
+        }
+
+        else if (err.type === 'peer-unavailable') {
+
+            console.log('[PeerJS] peer destino offline')
+
+        }
+
+        else {
+
+            console.error('[PeerJS] erro crítico', err)
+
+        }
+
+    })
+
 }
 
 function handleCallStream(call) {
@@ -331,17 +413,15 @@ function handleCallStream(call) {
     activeCalls[key] = call;
 
     call.on('stream', (remoteStream) => {
-        console.log('[PeerJS] Stream recebida ativamente do peer:', call.peer);
+        // CORRIGIDO: Log detalhado para debug de trilhas de áudio
+        console.log('[DEBUG] Stream recebida do peer:', call.peer);
+        console.log('[DEBUG] Audio tracks:', remoteStream.getAudioTracks().length);
+        console.log('[DEBUG] Video tracks:', remoteStream.getVideoTracks().length);
+
         const trackCount = remoteStream.getTracks().length;
         if (trackCount === 0) {
-            console.warn('[PeerJS] Stream sem tracks do peer', call.peer, '— fechando e tentando novamente em 2s');
-            call.close();
-            setTimeout(() => {
-                if (isInCall && localStream && peer) {
-                    const c = peer.call(String(call.peer), localStream, { metadata: { isMuted, isCameraOn } });
-                    if (c) handleCallStream(c);
-                }
-            }, 2000);
+            console.warn('[PeerJS] Stream sem tracks do peer', call.peer, '— aguardando ou reiniciando...');
+            // CORRIGIDO: Não fechar imediatamente, alguns navegadores demoram a popular os tracks
             return;
         }
         renderRemoteParticipant(call.peer, remoteStream, call.metadata);
@@ -373,6 +453,7 @@ async function getLocalMedia() {
         const localVid = document.getElementById('localVideo');
         if (localVid) {
             localVid.srcObject = localStream;
+            localVid.muted = true; // CORRIGIDO: Garante que o vídeo local ESTÁ sempre mutado (evita eco)
         }
 
         if (isMuted) {
@@ -529,19 +610,21 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
 
         let fallbackName = 'Usuário';
         if (window.conversaAtual) {
-             const member = window.conversaAtual.membros.find(m => String(m.id) === String(participantId));
-             if (member) fallbackName = member.nome;
+            const member = window.conversaAtual.membros.find(m => String(m.id) === String(participantId));
+            if (member) fallbackName = member.nome;
         }
 
         const initial = fallbackName.charAt(0).toUpperCase();
 
         container.innerHTML = `
-            <video autoplay playsinline class="hidden" id="video-${participantId}"></video>
+            <video autoplay playsinline id="video-${participantId}"></video> 
             <div class="remote-avatar" id="avatar-${participantId}">
                 <video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%; height:100%; object-fit:cover; border-radius:50%;"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>
             </div>
             <div class="remote-label">${fallbackName}</div>
         `;
+        // CORRIGIDO: Removido class "hidden" inicial do video para evitar bugs de renderização
+        // CORRIGIDO: Verificado que o video remoto NÃO tem atributo 'muted'
         grid.appendChild(container);
     }
 
@@ -550,11 +633,23 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
 
     if (videoNode && stream) {
         videoNode.srcObject = stream;
-        videoNode.onloadedmetadata = () => videoNode.play().catch(e=>console.warn(e));
-        
+        videoNode.muted = false; // CORRIGIDO: Garantir MUITO que o vídeo remoto NÃO está mutado
+
+        // CORRIGIDO: Melhorado o tratamento de autoplay
+        videoNode.onloadedmetadata = () => {
+            const playPromise = videoNode.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(error => {
+                    console.warn('[DEBUG] Autoplay bloqueado pelo navegador. O usuário precisa interagir com a página.', error);
+                    // CORRIGIDO: Adiciona um listener global de clique para destravar se o autoplay falhar
+                    document.addEventListener('click', () => videoNode.play(), { once: true });
+                });
+            }
+        };
+
         videoNode.classList.remove('hidden');
         if (avatarNode) avatarNode.classList.add('hidden');
-        
+
         if (metadata && metadata.isCameraOn === false) {
             videoNode.classList.add('hidden');
             if (avatarNode) avatarNode.classList.remove('hidden');
@@ -605,8 +700,9 @@ async function joinCall() {
     isMuted = false;
     isCameraOn = false; window.isCameraOn = false;
 
-    if (!peer) initPeer();
-
+    if (isInCall && window.conversaAtual) {
+        console.log('[PeerJS] Peer aberto, tentando reconectar peers...');
+    }
     showCallUI();
     updateCallStatusText('Conectando dispositivos...');
 
@@ -617,6 +713,9 @@ async function joinCall() {
         return;
     }
 
+    // CORRIGIDO: Inicia o Peer ou garante que esteja aberto
+    initPeer();
+
     updateCallStatusText('Conectado à nuvem p2p..');
     isJoined = true;
 
@@ -626,40 +725,44 @@ async function joinCall() {
     const conv = window.conversaAtual;
     if (conv) {
         const others = conv.membros.filter(m => m.id !== currentUser.id);
-        const myIdNum = Number(currentUser.id);
 
-        // Task 1: broadcast in_call para todos os membros
-        for (const m of others) {
-            await sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
-        }
-
-        // 1. Avisa os outros — inclui useCloud para callee usar o mesmo servidor PeerJS
-        for (const m of others) {
-            await sendCallSignal(m.id, 'join', {
+        // 1. Avisa os outros membros sobre a chamada
+        others.forEach(m => {
+            sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
+            sendCallSignal(m.id, 'join', {
                 callerName: currentUser.nome,
                 callerPhoto: currentUser.foto || null,
                 convName: conv.nome || null,
-                convTipo: conv.tipo,
-                useCloud: peerUseCloudFallback
+                convTipo: conv.tipo
             }, callSourceId);
-        }
+        });
 
-        // 2. FIX: só o peer com ID numérico MENOR inicia a chamada; o maior apenas responde em peer.on('call')
-        const tryConnectToPeers = () => {
-            if (!isInCall || !peer || !localStream || !window.conversaAtual) return;
-            const conv = window.conversaAtual;
-            const others = conv.membros.filter(m => m.id !== currentUser.id);
+        const attemptCallToOthers = async () => {
+            // CORRIGIDO: Aguarda o Peer estar pronto ("open") antes de tentar chamar
+            if (!peer || !peer.open) {
+                console.log('[PeerJS] Aguardando Peer ficar online...');
+                return;
+            }
+
             for (const m of others) {
                 const remoteIdNum = Number(m.id);
                 if (isNaN(myIdNum) || isNaN(remoteIdNum) || myIdNum >= remoteIdNum) continue;
                 const key = String(m.id);
-                if (activeCalls[key]) continue; // já conectado
+                if (activeCalls[key]) continue;
+
+                console.log(`[PeerJS] Iniciando chamada para ${m.nome} (Peer ID: ${key})`);
                 const call = peer.call(key, localStream, {
                     metadata: { isMuted: isMuted, isCameraOn: isCameraOn }
                 });
                 if (call) handleCallStream(call);
             }
         };
+
+        const tryConnectToPeers = () => {
+            if (!isInCall || !peer || !localStream || !window.conversaAtual) return;
+            attemptCallToOthers();
+        };
+
         tryConnectToPeers();
         if (callRetryInterval) clearInterval(callRetryInterval);
         callRetryInterval = setInterval(tryConnectToPeers, 4000);
@@ -731,13 +834,13 @@ async function toggleCamera() {
         if (isCameraOn) {
             const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
             const videoTrack = newStream.getVideoTracks()[0];
-            
+
             if (localStream) {
                 localStream.addTrack(videoTrack);
             } else {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
             }
-            
+
             // Troca proativamente o Track com os Peers na mesma sala
             Object.values(activeCalls).forEach(call => {
                 if (call.peerConnection) {
@@ -793,8 +896,8 @@ async function populateMicrophones() {
         if (audioInputs.length === 0) {
             menuList.innerHTML = '<div class="device-item" style="color:var(--text-muted);cursor:default;">Nenhum microfone encontrado</div>';
         }
-    } catch(e) {
-         menuList.innerHTML = '<div class="device-item" style="color:var(--text-muted);cursor:default;">Erro ao ler microfones API</div>';
+    } catch (e) {
+        menuList.innerHTML = '<div class="device-item" style="color:var(--text-muted);cursor:default;">Erro ao ler microfones API</div>';
     }
 }
 
@@ -806,7 +909,7 @@ async function switchMicrophone(deviceId, label) {
                 audio: { deviceId: { exact: deviceId } }
             });
             const newAudioTrack = audioStream.getAudioTracks()[0];
-            
+
             localStream.getAudioTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
             localStream.addTrack(newAudioTrack);
             if (isMuted) newAudioTrack.enabled = false;
@@ -814,7 +917,7 @@ async function switchMicrophone(deviceId, label) {
             Object.values(activeCalls).forEach(call => {
                 if (call.peerConnection) {
                     const sender = call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'audio');
-                    if (sender) sender.replaceTrack(newAudioTrack).catch(e=>console.warn(e));
+                    if (sender) sender.replaceTrack(newAudioTrack).catch(e => console.warn(e));
                 }
             });
         }
@@ -912,7 +1015,7 @@ function showIncomingCallAlert(callConv, callerMember, dados) {
     document.getElementById('btnAcceptCall').onclick = async () => {
         dismissIncomingCall();
         window.callSourceId = callConv.id;
-        if (dados && dados.useCloud) peerUseCloudFallback = true;
+        // CORRIGIDO: Removida a aceitação de fallback para nuvem vindo do sinal
         if (!window.conversaAtual || window.conversaAtual.id !== callConv.id) {
             if (typeof abrirConversa === 'function') await abrirConversa(callConv.id);
         }

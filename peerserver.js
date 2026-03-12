@@ -1,11 +1,21 @@
 const { PeerServer } = require('peer');
 
-console.log('Starting PeerJS signaling server on port 9000...');
+const PORT = 9000;
+
+console.log(`Starting PeerJS signaling server on port ${PORT}...`);
 
 const peerServer = PeerServer({
-  port: 9000,
+
+  port: PORT,
+
   path: '/myapp',
-  allow_discovery: true
+
+  allow_discovery: true,
+
+  proxied: true,        // importante se usar nginx / proxy
+
+  pingInterval: 20000   // evita desconexões frequentes
+
 });
 
 peerServer.on('connection', (client) => {
@@ -16,4 +26,16 @@ peerServer.on('disconnect', (client) => {
   console.log(`[PeerServer] Client disconnected: ${client.getId()}`);
 });
 
-console.log('PeerServer is running! Connecting peers should use port 9000 and path /myapp.');
+peerServer.on('error', (err) => {
+  console.error('[PeerServer] Error:', err);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+});
+
+console.log(`PeerServer running at http://localhost:${PORT}/myapp`);

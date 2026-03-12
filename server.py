@@ -14,7 +14,7 @@ from PIL import Image as PILImage  # type: ignore
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = os.urandom(32)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB (buffer for raw uploads before compression)
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
 CORS(app, supports_credentials=True)
 socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='threading')
 
@@ -369,40 +369,29 @@ def listar_conversas():
     if not conversas:
         return jsonify([])
 
-    conv_ids = [c['id'] for c in conversas]
-    placeholders = ','.join(['?'] * len(conv_ids))
-    
-    # Fetch all members for all returned conversations in a SINGLE query
-    membros_raw = db.execute(f'''
-        SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto
-        FROM conversa_membros cm 
-        JOIN usuarios u ON cm.usuario_id = u.id
-        WHERE cm.conversa_id IN ({placeholders})
-    ''', conv_ids).fetchall()
-
-    # Group members by conversation ID
-    membros_by_conv = {}
-    for m in membros_raw:
-        cid = m['conversa_id']
-        if cid not in membros_by_conv:
-            membros_by_conv[cid] = []
-        membros_by_conv[cid].append(dict(m))
-
     result = []
     for c in conversas:
         conv: Dict[str, Any] = dict(c)
-        conv['membros'] = membros_by_conv.get(c['id'], [])
+        # Lightweight payload for list: não incluir todos os membros aqui
+        # para evitar payload gigante e dados redundantes no sidebar.
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
-            other = [m for m in conv['membros'] if m['id'] != uid]
+            # Derivar apenas nome/foto do outro participante em uma query leve
+            other = db.execute('''
+                SELECT u.nome, u.foto 
+                FROM conversa_membros cm 
+                JOIN usuarios u ON cm.usuario_id = u.id
+                WHERE cm.conversa_id = ? AND cm.usuario_id != ?
+                LIMIT 1
+            ''', (c['id'], uid)).fetchone()
             if other:
-                conv['display_nome'] = other[0]['nome']
-                conv['display_foto'] = other[0]['foto'] or ''
+                conv['display_nome'] = other['nome']
+                conv['display_foto'] = other['foto'] or ''
             else:
-                # Fallback if it's a chat with yourself or something went wrong
-                conv['display_nome'] = 'Minhas Anotações' if len(conv['membros']) == 1 else 'Chat'
-                conv['display_foto'] = conv['membros'][0]['foto'] if conv['membros'] else ''
+                # Fallback se for um chat "consigo mesmo" ou estado inconsistente
+                conv['display_nome'] = 'Minhas Anotações'
+                conv['display_foto'] = ''
         else:
             conv['display_nome'] = c['nome'] or 'Grupo'
             conv['display_foto'] = c['foto'] or ''
@@ -638,7 +627,6 @@ def sair_grupo(id):
 def listar_mensagens(id):
     db = get_db_g()
     after_id = request.args.get('after_id', '')
-    before_id = request.args.get('before_id', '')
     subtopico_id = request.args.get('subtopico_id', '')
 
     if after_id:
@@ -666,7 +654,7 @@ def listar_mensagens(id):
             ''', (id, int(after_id))).fetchall()
     else:
         if subtopico_id:
-            query = '''
+            msgs = db.execute('''
                 SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
                        r.conteudo as reply_content, ru.nome as reply_author
                 FROM mensagens m 
@@ -674,15 +662,10 @@ def listar_mensagens(id):
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
-            '''
-            params = [id, int(subtopico_id)]
-            if before_id:
-                query += ' AND m.id < ?'
-                params.append(int(before_id))
-            query += ' ORDER BY m.criado_em DESC LIMIT 50'
-            msgs = db.execute(query, params).fetchall()
+                ORDER BY m.criado_em DESC LIMIT 50
+            ''', (id, int(subtopico_id))).fetchall()
         else:
-            query = '''
+            msgs = db.execute('''
                 SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
                        r.conteudo as reply_content, ru.nome as reply_author
                 FROM mensagens m 
@@ -690,13 +673,8 @@ def listar_mensagens(id):
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
-            '''
-            params = [id]
-            if before_id:
-                query += ' AND m.id < ?'
-                params.append(int(before_id))
-            query += ' ORDER BY m.criado_em DESC LIMIT 50'
-            msgs = db.execute(query, params).fetchall()
+                ORDER BY m.criado_em DESC LIMIT 50
+            ''', (id,)).fetchall()
         msgs = list(reversed(msgs))
     return jsonify([dict(m) for m in msgs])
 
@@ -771,7 +749,7 @@ def chat_sync():
         conv_ids = [c['id'] for c in conversas_raw]
         placeholders = ','.join(['?'] * len(conv_ids))
         membros_raw = db.execute(f'''
-            SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto
+            SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
             FROM conversa_membros cm 
             JOIN usuarios u ON cm.usuario_id = u.id
             WHERE cm.conversa_id IN ({placeholders})

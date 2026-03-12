@@ -14,6 +14,7 @@ let replyState = null; // { id, author, text }
 // Estrutura: { [conversaId]: { messages: [], lastFetchedAt: number, lastMsgId: number } }
 const messageCache = {};
 const MESSAGE_CACHE_TTL = 30000; // 30s
+const MAX_RENDERED_MESSAGES = 200;
 
 // ── Helpers & Utilities (Global Scope) ──
 const isEmojiOnly = (str) => {
@@ -70,6 +71,7 @@ socket.on('new_message', (msg) => {
         const container = document.getElementById('chatMessages');
         const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
         if (wasAtBottom) container.scrollTop = container.scrollHeight;
+        trimMessageDom(container);
     }
 });
 
@@ -184,9 +186,22 @@ window.prefetchMensagens = prefetchMensagens;
 
 // ── Open Conversation ──
 async function abrirConversa(id) {
-    const conv = conversas.find(c => c.id === id);
-    if (!conv) return;
+    const lightweight = conversas.find(c => c.id === id);
+    if (!lightweight) return;
+    
     if (conversaAtual) socket.emit('leave_conv', { conversa_id: conversaAtual.id });
+    
+    // Buscar detalhes completos (membros, descrição, etc.) em endpoint dedicado,
+    // mantendo payload de /api/conversas enxuto.
+    let conv = lightweight;
+    try {
+        const full = await api(`/api/conversas/${id}`);
+        // Garante que campos como display_nome/display_foto permaneçam
+        conv = { ...lightweight, ...full };
+    } catch (e) {
+        console.warn('[Chat] Falha ao carregar detalhes da conversa, usando dados básicos.', e);
+    }
+
     conversaAtual = conv;
     window.conversaAtual = conversaAtual;
     socket.emit('join_conv', { conversa_id: id });
@@ -200,13 +215,9 @@ async function abrirConversa(id) {
     document.getElementById('chatMessages').classList.remove('hidden');
     document.getElementById('chatInputArea').classList.remove('hidden');
 
-    // Reset pagination
-    window._chatLoadingOlder = false;
-    window._chatHasMore = true;
-
     const subBar = document.getElementById('subtopicsBar');
     const isDirect = conv.tipo === 'direto';
-    const otherUser = isDirect ? conv.membros.find(m => m.id !== currentUser.id) : null;
+    const otherUser = isDirect && conv.membros ? conv.membros.find(m => m.id !== currentUser.id) : null;
     
     document.getElementById('chatNome').textContent = conv.display_nome;
     if (isDirect && otherUser) {
@@ -236,7 +247,7 @@ async function abrirConversa(id) {
     document.getElementById('btnCallVideo').classList.add('hidden'); // Hidden — camera toggles inside call
 
     const subtitle = conv.tipo === 'grupo'
-        ? `${conv.membros.length} membros${conv.descricao ? ' • ' + conv.descricao : ''}`
+        ? `${(conv.membros ? conv.membros.length : 0)} membros${conv.descricao ? ' • ' + conv.descricao : ''}`
         : `@${otherUser?.username || ''}`;
     document.getElementById('chatSubtitle').textContent = subtitle;
 
@@ -578,6 +589,17 @@ function hideMessagesSkeleton() {
     }
 }
 
+function trimMessageDom(container) {
+    if (!container) return;
+    const bubbles = Array.from(container.querySelectorAll('.msg-bubble'));
+    const excess = bubbles.length - MAX_RENDERED_MESSAGES;
+    if (excess <= 0) return;
+    for (let i = 0; i < excess; i++) {
+        const b = bubbles[i];
+        if (b && b.parentElement) b.parentElement.removeChild(b);
+    }
+}
+
 // ── Messages (id-based dedup, no more duplicates)
 // ── Render Single Message ──
 function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
@@ -659,23 +681,12 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     return bubble;
 }
 
-async function loadMensagens(isPaging = false) {
+async function loadMensagens() {
     if (!conversaAtual) return;
-    if (isPaging && (window._chatLoadingOlder || !window._chatHasMore)) return;
-
     try {
-        if (isPaging) window._chatLoadingOlder = true;
-
         let endpoint = `/api/conversas/${conversaAtual.id}/mensagens`;
         const params = [];
-        
-        if (isPaging) {
-            const firstMsg = document.querySelector('.msg-bubble[data-msg-id]');
-            if (firstMsg) params.push(`before_id=${firstMsg.dataset.msgId}`);
-        } else if (lastMsgId) {
-            params.push(`after_id=${lastMsgId}`);
-        }
-        
+        if (lastMsgId) params.push(`after_id=${lastMsgId}`);
         if (subtopicAtual) params.push(`subtopico_id=${subtopicAtual.id}`);
         if (params.length) endpoint += '?' + params.join('&');
 
@@ -684,18 +695,18 @@ async function loadMensagens(isPaging = false) {
         const convId = conversaAtual.id;
         const cacheEntry = getMessageCacheEntry(convId);
 
-        if (!lastMsgId && !isPaging) {
+        if (!lastMsgId) {
             container.innerHTML = '';
             if (msgs.length === 0) {
                 const label = subtopicAtual ? `"${subtopicAtual.nome}"` : 'esta conversa';
                 container.innerHTML = `<p class="empty-state" style="padding:2rem">Nenhuma mensagem em ${label}. Diga oi! 👋</p>`;
             }
+            // Reset cache on first page load
             cacheEntry.messages = [];
         }
 
-        if (msgs.length === 0 && isPaging) {
-            window._chatHasMore = false;
-            return;
+        if (msgs.length > 0 && container.querySelector('.empty-state')) {
+            container.innerHTML = '';
         }
 
         if (msgs.length > 0) {
@@ -705,38 +716,26 @@ async function loadMensagens(isPaging = false) {
 
             const fragment = document.createDocumentFragment();
             const existingIds = new Set(cacheEntry.messages.map(m => m.id));
-            
-            // Get scroll position before prepending
-            const oldScrollHeight = container.scrollHeight;
-            const oldScrollTop = container.scrollTop;
 
             msgs.forEach(msg => {
-                const bubble = renderSingleMessage(msg, false, true);
+                const bubble = renderSingleMessage(msg, false, true); // true = return element only
                 if (bubble) fragment.appendChild(bubble);
                 if (!existingIds.has(msg.id)) {
-                    if (isPaging) cacheEntry.messages.unshift(msg);
-                    else cacheEntry.messages.push(msg);
+                    cacheEntry.messages.push(msg);
                 }
-                if (!isPaging) lastMsgId = msg.id;
+                lastMsgId = msg.id;
             });
 
-            if (isPaging) {
-                container.prepend(fragment);
-                // Adjust scroll to maintain position
-                container.scrollTop = oldScrollTop + (container.scrollHeight - oldScrollHeight);
-            } else {
-                container.appendChild(fragment);
-                container.scrollTop = container.scrollHeight;
-            }
-
-            if (!isPaging) cacheEntry.lastMsgId = lastMsgId;
+            cacheEntry.lastMsgId = lastMsgId;
             cacheEntry.lastFetchedAt = Date.now();
             messageCache[convId] = cacheEntry;
+
+            container.appendChild(fragment);
+            container.scrollTop = container.scrollHeight;
+            trimMessageDom(container);
         }
     } catch (err) {
         console.error('Messages error:', err);
-    } finally {
-        if (isPaging) window._chatLoadingOlder = false;
     }
 }
 
@@ -946,6 +945,7 @@ async function enviarMensagem() {
         
         const container = document.getElementById('chatMessages');
         container.scrollTop = container.scrollHeight;
+        trimMessageDom(container);
         // ---------------------
 
         try {
@@ -1167,14 +1167,6 @@ async function performSync() {
         isSyncing = false;
     }
 }
-
-// Infinite Scroll Listener
-document.getElementById('chatMessages')?.addEventListener('scroll', (e) => {
-    const container = e.target;
-    if (container.scrollTop < 100) {
-        loadMensagens(true);
-    }
-});
 
 // Keep old names for compatibility
 function startChatPolling() { startSyncPolling(); }
