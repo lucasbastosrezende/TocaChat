@@ -1016,8 +1016,12 @@ async function enviarMensagem() {
                 const conteudoEscaped = (msgData.conteudo || '').replace(/'/g, "\\'").replace(/\n/g, " ");
 
                 actions.innerHTML = `
-                    <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${res.id}, '${currentUserEscaped}', '${conteudoEscaped}')" title="Responder">↩️</button>
-                    <button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${res.id})" title="Apagar mensagem">🗑️</button>
+                    <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${res.id}, '${currentUserEscaped}', '${conteudoEscaped}')" title="Responder">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                    </button>
+                    <button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${res.id})" title="Apagar mensagem">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                    </button>
                 `;
             }
             
@@ -1261,7 +1265,7 @@ async function criarGrupo() {
     const membros = Array.from(document.querySelectorAll('.grupo-membro-check:checked')).map(cb => parseInt(cb.value));
     try {
         const res = await api('/api/conversas/grupo', { method:'POST', body:{nome,membros}});
-        closeModal(); showToast('Grupo criado! 👥','success'); await loadConversas(); abrirConversa(res.id);
+        closeModal(); showToast('Grupo criado!', 'success'); await loadConversas(); abrirConversa(res.id);
     } catch(err) { showToast('Erro ao criar grupo','error'); }
 }
 
@@ -1281,13 +1285,15 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
     const subsList = subtopicos.map(s => `
         <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-input);border-radius:var(--radius-sm);border-left:3px solid ${s.cor}">
             <span style="flex:1">${s.nome}</span>
-            <button class="btn btn-sm btn-ghost" onclick="editarSubtopico(${s.id})" style="padding:0.2rem 0.4rem">✏️</button>
+            <button class="btn btn-sm btn-ghost" onclick="editarSubtopico(${s.id})" style="padding:0.2rem 0.4rem">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pencil"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+            </button>
         </div>`).join('');
 
     openModal('Editar Grupo', `
         <div style="text-align:center;margin-bottom:1.5rem">
             <div class="profile-avatar-lg" id="grupoAvatarEdit" style="margin: 0 auto 1rem;">
-                ${conversaAtual.foto ? `<img src="${conversaAtual.foto}" alt="">` : `<span>👥</span>`}
+                ${conversaAtual.foto ? `<img src="${conversaAtual.foto}" alt="">` : `<span><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-users"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>`}
             </div>
             <div style="display: flex; gap: 0.5rem; justify-content: center;">
                 <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir arquivo">
@@ -1315,11 +1321,12 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <label class="btn btn-sm btn-secondary" style="cursor:pointer; flex: 1; justify-content: center;">
-                        🖼️ Imagem/GIF
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image" style="margin-right: 4px;"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                        Imagem/GIF
                         <input type="file" id="grupoWallInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
                     </label>
                     <button class="btn btn-sm btn-secondary" id="btnGrupoWallGif" style="flex: 1; justify-content: center;">🎬 Buscar GIF</button>
-                    ${conversaAtual.wallpaper ? `<button class="btn btn-sm btn-ghost" onclick="removerGrupoWall()" style="color:var(--danger)">🗑️</button>` : ''}
+                    ${conversaAtual.wallpaper ? `<button class="btn btn-sm btn-ghost" onclick="removerGrupoWall()" style="color:var(--danger)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>` : ''}
                 </div>
             </div>
             
@@ -1353,7 +1360,10 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
         </div>
         
         <div style="margin-top:2rem; padding-top:1rem; border-top:1px solid rgba(255,255,255,0.1); text-align:center;">
-            <button class="btn btn-ghost" style="color:var(--danger)" onclick="excluirGrupoInteiro()">🗑️ Excluir Grupo</button>
+            <button class="btn btn-ghost" style="color:var(--danger)" onclick="excluirGrupoInteiro()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2" style="margin-right: 6px;"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                Excluir Grupo
+            </button>
         </div>
     `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="salvarGrupo()">Salvar</button>`);
 
@@ -1496,7 +1506,7 @@ function setGrupoWallpaper(url) {
     conversaAtual.wallpaper = url;
     document.getElementById('grupoWallPreview').innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover;">`;
     renderConversasList();
-    showToast('Plano de fundo atualizado! 🏞️','success');
+    showToast('Plano de fundo atualizado!', 'success');
 }
 
 function removerGrupoWall() {
@@ -1545,7 +1555,7 @@ function setGrupoAvatar(url) {
     document.getElementById('grupoAvatarEdit').innerHTML = `<img src="${url}" alt="">`;
     document.getElementById('chatAvatar').innerHTML = `<img src="${url}" alt="">`;
     renderConversasList();
-    showToast('Foto do grupo atualizada! 🎉','success');
+    showToast('Foto do grupo atualizada!', 'success');
 }
 
 async function excluirChat(id, nome) {
@@ -1715,7 +1725,7 @@ async function fixarMensagem(msgId) {
             method: 'POST',
             body: { mensagem_id: msgId }
         });
-        showToast('Mensagem fixada! 📌', 'success');
+        showToast('Mensagem fixada!', 'success');
         // O sync cuidará de atualizar a UI para todos
     } catch (err) {
         showToast('Erro ao fixar mensagem', 'error');
