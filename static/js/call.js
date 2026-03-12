@@ -568,13 +568,7 @@ function updateLocalVideo() {
         vid.classList.add('hidden');
         avatar.classList.remove('hidden');
 
-        if (currentUser) {
-            if (currentUser.foto) {
-                avatar.innerHTML = `<img src="${currentUser.foto}" alt="" style="width:100%; height:100%; object-fit:cover; border-radius:50%;">`;
-            } else {
-                avatar.innerHTML = `<video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%; height:100%; object-fit:cover; border-radius:50%;"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`;
-            }
-        }
+            avatar.innerHTML = getAvatarHtml(currentUser.id, currentUser.nome, currentUser.foto);
     }
 }
 
@@ -619,7 +613,7 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
         container.innerHTML = `
             <video autoplay playsinline id="video-${participantId}"></video> 
             <div class="remote-avatar" id="avatar-${participantId}">
-                <video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%; height:100%; object-fit:cover; border-radius:50%;"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>
+                ${getAvatarHtml(participantId, fallbackName, null)}
             </div>
             <div class="remote-label">${fallbackName}</div>
         `;

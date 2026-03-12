@@ -103,10 +103,7 @@ document.getElementById('btnEditProfile').addEventListener('click', (e) => {
             <div class="profile-wallpaper-container">
                 <img src="${currentUser.wallpaper || ''}" class="profile-wallpaper-img" id="modalWallpaper" onerror="this.style.display='none'" onload="this.style.display='block'">
                 <div class="profile-avatar-lg" id="modalAvatar">
-                    ${currentUser.foto
-                        ? `<img src="${currentUser.foto}" alt="${currentUser.nome}">`
-                        : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`
-                    }
+                    ${getAvatarHtml(currentUser.id, currentUser.nome, currentUser.foto)}
                 </div>
             </div>
             

@@ -209,6 +209,16 @@ async function appFetchTenorSearch(query, callback) {
     }
 }
 
+// ── Avatar Utility ──
+function getAvatarHtml(id, nome, foto) {
+    if (foto) {
+        return `<img src="${foto}" alt="${nome}" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`;
+    }
+    // Fallback: Animated Abstract Video for users without photo
+    return `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`;
+}
+window.getAvatarHtml = getAvatarHtml;
+
 // ── Init ──
 document.addEventListener('DOMContentLoaded', async () => {
     try {

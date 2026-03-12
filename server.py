@@ -244,7 +244,8 @@ def login():
     return jsonify({
         'id': user['id'], 'username': user['username'],
         'nome': user['nome'], 'bio': user['bio'], 'foto': user['foto'],
-        'wallpaper': user['wallpaper']
+        'wallpaper': user['wallpaper'],
+        'wallpaper_placeholder': user['wallpaper_placeholder']
     })
 
 
@@ -260,7 +261,7 @@ def me():
     if not uid:
         return jsonify({'autenticado': False}), 401
     db = get_db_g()
-    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
     if not user:
         session.clear()
         return jsonify({'autenticado': False}), 401
@@ -276,12 +277,22 @@ def atualizar_perfil():
     data = request.json
     uid = get_user_id()
     db = get_db_g()
+    
+    # Update base profile
     db.execute(
         'UPDATE usuarios SET nome=?, bio=?, atualizado_em=? WHERE id=?',
         (data.get('nome', ''), data.get('bio', ''), agora_manaus().isoformat(), uid)
     )
+    
+    # Handle wallpaper_placeholder separately if provided
+    if 'wallpaper_placeholder' in data:
+        db.execute(
+            'UPDATE usuarios SET wallpaper_placeholder=?, atualizado_em=? WHERE id=?',
+            (data.get('wallpaper_placeholder', ''), agora_manaus().isoformat(), uid)
+        )
+        
     db.commit()
-    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
     return jsonify(dict(user))
 
 
@@ -295,14 +306,19 @@ def upload_foto():
     if not file or not allowed_file(file.filename):
         return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
 
+    tipo = request.form.get('tipo', 'avatar')  # 'avatar', 'wallpaper', or 'wallpaper_placeholder'
+    
+    # Selection of directory based on type
+    is_global_wallpaper = (tipo == 'wallpaper_placeholder')
+    target_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'images') if is_global_wallpaper else UPLOAD_DIR
+    
     ext = file.filename.rsplit('.', 1)[1].lower()
-    filename = f"{uuid.uuid4().hex}.{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
+    filename = f"{uuid.uuid4().hex}.{ext}" if not is_global_wallpaper else f"custom_{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(target_dir, filename)
     file.save(filepath)
 
     uid = get_user_id()
     db = get_db_g()
-    tipo = request.form.get('tipo', 'avatar')  # 'avatar' or 'wallpaper'
     col = 'wallpaper' if tipo == 'wallpaper' else 'foto'
 
     # Server-side compression (avatar: 256px, wallpaper: 1280px)
@@ -311,8 +327,15 @@ def upload_foto():
     filepath = compress_image(filepath, max_size=max_sz, quality=qual)
     filename = os.path.basename(filepath)
 
-    
-    # Remove old photo/wallpaper
+    if is_global_wallpaper:
+        foto_url = f"/static/images/{filename}"
+        # We don't delete old global wallpapers as they are shared
+        db.execute('UPDATE usuarios SET wallpaper_placeholder=?, atualizado_em=? WHERE id=?',
+                   (foto_url, agora_manaus().isoformat(), uid))
+        db.commit()
+        return jsonify({'foto': foto_url, 'tipo': tipo})
+
+    # Remove old photo/wallpaper (only for private avatars/wallpapers)
     old = db.execute(f'SELECT {col} FROM usuarios WHERE id = ?', (uid,)).fetchone()
     if old and old[col]:
         old_path = os.path.join(UPLOAD_DIR, os.path.basename(old[col]))
@@ -329,6 +352,19 @@ def upload_foto():
     
     db.commit()
     return jsonify({'foto': foto_url, 'tipo': tipo})
+
+
+@app.route('/api/wallpapers', methods=['GET'])
+def listar_wallpapers():
+    """List all available wallpapers in static/images."""
+    img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'images')
+    files = []
+    if os.path.exists(img_dir):
+        # Only return common image formats, skip the abstract avatar video
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+        files = [f"/static/images/{f}" for f in os.listdir(img_dir) 
+                 if f.lower().endswith(valid_extensions)]
+    return jsonify(files)
 
 
 @app.route('/api/usuarios', methods=['GET'])
@@ -979,19 +1015,6 @@ def restaurar_mensagem(msg_id):
     return jsonify({'status': 'ok', 'mensagem': msg_dict}), 200
 
 
-@app.route('/api/conversas/<int:id>/lixeira', methods=['GET'])
-@login_required
-def lixeira_mensagens(id):
-    uid = get_user_id()
-    db = get_db_g()
-    msgs = db.execute('''
-        SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username
-        FROM mensagens m 
-        JOIN usuarios u ON m.usuario_id = u.id
-        WHERE m.conversa_id = ? AND m.usuario_id = ? AND m.excluido_em IS NOT NULL
-        ORDER BY m.excluido_em DESC
-    ''', (id, uid)).fetchall()
-    return jsonify([dict(m) for m in msgs])
 
 
 @app.route('/api/conversas/<int:id>/pin', methods=['POST'])
@@ -1506,4 +1529,4 @@ def on_leave_conv(data):
 # ══════════════════════════════════════════════
 if __name__ == '__main__':
     print("TocaDoConhecimento rodando em http://localhost:3000 (com WebSockets)")
-    socketio.run(app, host='0.0.0.0', port=3000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=3000, debug=True)

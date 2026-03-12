@@ -148,7 +148,7 @@ function renderConversasList() {
                 <div class="chat-item-avatar">
                     ${c.display_foto
                         ? `<img src="${c.display_foto}" alt="" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`
-                        : (isGroup ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`)}
+                        : (isGroup ? `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-users" style="opacity: 0.7;"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="19" cy="4" r="3"/></svg>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`)}
                 </div>
                 <div class="chat-item-info">
                     <div class="chat-item-name">${c.display_nome}</div>
@@ -157,7 +157,7 @@ function renderConversasList() {
                 <div style="display: flex; align-items: center; gap: 0.25rem;">
                     ${unread > 0 ? `<span class="chat-unread-badge">${unread > 99 ? '99+' : unread}</span>` : ''}
                     ${c.ultima_msg_em ? `<span class="chat-item-time">${formatTime(c.ultima_msg_em)}</span>` : ''}
-                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa">🗑️</button>` : ''}
+                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>` : ''}
                 </div>
             </div>`;
     }).join('');
@@ -381,7 +381,10 @@ async function loadSubtopicos() {
 function renderSubtopicsTabs() {
     const container = document.getElementById('subtopicsTabs');
     // "Geral" is always first and NOT draggable.
-    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false">💬 Geral</button>`;
+    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false" style="display: flex; align-items: center; gap: 0.4rem;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Geral
+    </button>`;
     
     subtopicos.forEach(s => {
         const isActive = subtopicAtual && subtopicAtual.id === s.id ? 'active' : '';
@@ -647,7 +650,7 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
             optimistic.dataset.msgId = msg.id;
             optimistic.querySelector('.msg-time').textContent = formatTime(msg.criado_em);
             const actions = optimistic.querySelector('.msg-actions');
-            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>`;
+            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>`;
             return optimistic;
         }
     }
@@ -683,9 +686,15 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     bubble.innerHTML = `
         <div class="msg-actions">
             ${msg.id ? `
-                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder">↩️</button>
-                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar">📌</button>
-                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>` : ''}
+                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                </button>
+                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+                </button>
+                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                </button>` : ''}
             ` : ''}
         </div>
         ${!isMine ? `<div class="msg-author">
@@ -1803,70 +1812,7 @@ function incrementUnread(convId) {
     renderConversasList();
 }
 
-// --- Lixeira ---
-document.getElementById('btnLixeira').addEventListener('click', () => {
-    if (!conversaAtual) return;
-    openModal('modalLixeira');
-    loadLixeira();
-});
 
-async function loadLixeira() {
-    const list = document.getElementById('lixeiraList');
-    list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Carregando...</p>';
-
-    try {
-        const res = await fetch(`/api/conversas/${conversaAtual.id}/lixeira`);
-        const msgs = await res.json();
-
-        if (msgs.length === 0) {
-            list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Nenhuma mensagem excluída para restaurar.</p>';
-            return;
-        }
-
-        list.innerHTML = '';
-        msgs.forEach(msg => {
-            const item = document.createElement('div');
-            item.className = 'lixeira-item';
-            
-            const time = new Date(msg.excluido_em).toLocaleString('pt-BR');
-            const content = msg.conteudo || (msg.media_url ? '[Mídia]' : '[Sem conteúdo]');
-
-            item.innerHTML = `
-                <div class="lixeira-content">
-                    <div class="lixeira-text" title="${content}">${content}</div>
-                    <div class="lixeira-meta">Excluída em: ${time}</div>
-                </div>
-                <button class="btn-restaurar" onclick="restaurarMensagem(${msg.id})">Restaurar</button>
-            `;
-            list.appendChild(item);
-        });
-    } catch (err) {
-        console.error('Erro ao carregar lixeira:', err);
-        list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--danger-color);">Erro ao carregar lixeira.</p>';
-    }
-}
-
-async function restaurarMensagem(msgId) {
-    if (!confirm('Deseja restaurar esta mensagem?')) return;
-
-    try {
-        const res = await fetch(`/api/conversas/mensagens/${msgId}/restaurar`, {
-            method: 'POST'
-        });
-        const data = await res.json();
-
-        if (res.ok) {
-            alert('Mensagem restaurada com sucesso!');
-            loadLixeira();
-            // A mensagem aparecerá no chat via SocketIO (new_message)
-        } else {
-            alert('Erro: ' + (data.erro || 'Erro desconhecido'));
-        }
-    } catch (err) {
-        alert('Erro ao restaurar mensagem');
-        console.error(err);
-    }
-}
 
 // Clear unread when opening a conversation
 const _originalAbrirConversa = window.abrirConversa || (typeof abrirConversa !== 'undefined' ? abrirConversa : null);
@@ -1950,5 +1896,169 @@ function sendBrowserNotification(title, body, convName, convId) {
         console.warn('[Notif] Browser notification failed:', e);
     }
 }
+
+// ══════════════════════════════════════════════
+//  Wallpaper Placeholder Persistence
+// ══════════════════════════════════════════════
+//  Wallpaper Placeholder Persistence
+// ══════════════════════════════════════════════
+const WALLPAPER_STORAGE_KEY = 'chat_placeholder_wallpaper';
+window.AVAILABLE_WALLPAPERS = [];
+
+window.initPlaceholderWallpaper = async function() {
+    try {
+        // Refresh available list from server
+        await window.fetchWallpapers();
+        
+        // Prioritize server-saved wallpaper if available
+        const serverWall = (typeof currentUser !== 'undefined' && currentUser && currentUser.wallpaper_placeholder) 
+                        ? currentUser.wallpaper_placeholder 
+                        : null;
+                        
+        const saved = serverWall || localStorage.getItem(WALLPAPER_STORAGE_KEY);
+        if (saved) {
+            setPlaceholderWallpaper(saved, false);
+        }
+    } catch (e) {
+        console.error('[Wallpaper] Init failed:', e);
+    }
+};
+
+window.fetchWallpapers = async function() {
+    try {
+        const walls = await api('/api/wallpapers');
+        window.AVAILABLE_WALLPAPERS = Array.isArray(walls) ? walls : [];
+    } catch (e) {
+        console.error('[Wallpaper] Failed to fetch list:', e);
+        if (!window.AVAILABLE_WALLPAPERS || window.AVAILABLE_WALLPAPERS.length === 0) {
+            window.AVAILABLE_WALLPAPERS = [
+                '/static/images/logo1.gif',
+                '/static/images/logo2.gif',
+                '/static/images/logo4.jpg',
+                '/static/images/logo9.gif'
+            ];
+        }
+    }
+};
+
+window.syncWallpaperToServer = async function(url) {
+    if (typeof currentUser === 'undefined' || !currentUser) return;
+    try {
+        const updatedUser = await api('/api/perfil', {
+            method: 'PUT',
+            body: { wallpaper_placeholder: url }
+        });
+        if (updatedUser && updatedUser.wallpaper_placeholder !== undefined) {
+             currentUser.wallpaper_placeholder = updatedUser.wallpaper_placeholder;
+        }
+    } catch (e) {
+        console.error('[Wallpaper] Sync failed:', e);
+    }
+};
+
+window.setPlaceholderWallpaper = function(url, save = true) {
+    const placeholder = document.querySelector('.chat-placeholder');
+    if (!placeholder) {
+        // If placeholder is not found, maybe it's not the right screen yet
+        // but we should still save it to localStorage/server
+        if (save) {
+            localStorage.setItem(WALLPAPER_STORAGE_KEY, url);
+            syncWallpaperToServer(url);
+        }
+        return;
+    }
+    
+    if (url) {
+        placeholder.style.backgroundImage = `url('${url}')`;
+        if (save) {
+            localStorage.setItem(WALLPAPER_STORAGE_KEY, url);
+            syncWallpaperToServer(url);
+            showToast('Wallpaper atualizado! 🎨', 'success');
+        }
+    } else {
+        placeholder.style.backgroundImage = 'none';
+        if (save) {
+            localStorage.removeItem(WALLPAPER_STORAGE_KEY);
+            syncWallpaperToServer('');
+            showToast('Fundo removido', 'info');
+        }
+    }
+};
+
+window.abrirConfigWallpaper = async function() {
+    showToast('Carregando galeria...', 'info');
+    // Refresh list before opening
+    await window.fetchWallpapers();
+    
+    const current = (typeof currentUser !== 'undefined' && currentUser && currentUser.wallpaper_placeholder) 
+                   || localStorage.getItem(WALLPAPER_STORAGE_KEY);
+    
+    const gridHtml = `
+        <div class="wallpaper-grid">
+            <div class="wallpaper-item none-item ${!current ? 'active' : ''}" onclick="setPlaceholderWallpaper(''); closeModal();">
+                <span>🚫</span>
+                <span>Nenhum</span>
+            </div>
+            
+            <div class="wallpaper-item upload-item" onclick="document.getElementById('customWallInput').click()">
+                <span>📤</span>
+                <span>Subir seu Próprio</span>
+                <input type="file" id="customWallInput" accept="image/*" style="display:none" onchange="window.handleCustomWallpaperUpload(this)">
+            </div>
+
+            ${window.AVAILABLE_WALLPAPERS.map(url => `
+                <div class="wallpaper-item ${current === url ? 'active' : ''}" 
+                     style="background-image: url('${url}')" 
+                     onclick="setPlaceholderWallpaper('${url}'); closeModal();">
+                </div>
+            `).join('')}
+        </div>
+    `;
+    
+    openModal('Escolher Wallpaper', gridHtml, `
+        <button class="btn btn-ghost" onclick="closeModal()" style="width:100%">Fechar</button>
+    `);
+};
+
+window.handleCustomWallpaperUpload = async function(input) {
+    const file = input.files[0];
+    if (!file) return;
+    
+    showToast('Enviando wallpaper...', 'info');
+    
+    try {
+        const form = new FormData();
+        form.append('foto', file);
+        form.append('tipo', 'wallpaper_placeholder');
+        
+        const res = await fetch('/api/upload-foto', {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: form
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+            // Success! The background is set and synced
+            setPlaceholderWallpaper(data.foto);
+            closeModal();
+            // Refresh list for others
+            await fetchWallpapers();
+        } else {
+            showToast(data.erro || 'Erro no upload', 'error');
+        }
+    } catch (e) {
+        showToast('Falha na conexão', 'error');
+    }
+};
+
+// Auto-init and listener
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        const btn = document.getElementById('btnConfigWallpaper');
+        if (btn) btn.addEventListener('click', abrirConfigWallpaper);
+        initPlaceholderWallpaper();
+    }, 100);
+});
 
 

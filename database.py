@@ -125,6 +125,7 @@ def init_db():
         ('mensagens', 'media_url', "TEXT DEFAULT ''"),
         ('mensagens', 'reply_to_id', 'INTEGER'),
         ('usuarios', 'wallpaper', "TEXT DEFAULT ''"),
+        ('usuarios', 'wallpaper_placeholder', "TEXT DEFAULT ''"),
         ('conversas', 'wallpaper', "TEXT DEFAULT ''"),
         ('conversas', 'pinned_message_id', 'INTEGER'),
         ('grupo_subtopicos', 'pinned_message_id', 'INTEGER'),
