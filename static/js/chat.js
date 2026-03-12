@@ -10,6 +10,11 @@ let subtopicos = [];
 let subtopicAtual = null; // null = "Geral"
 let replyState = null; // { id, author, text }
 
+// In-memory cache por conversa para mensagens (SWR-style)
+// Estrutura: { [conversaId]: { messages: [], lastFetchedAt: number, lastMsgId: number } }
+const messageCache = {};
+const MESSAGE_CACHE_TTL = 30000; // 30s
+
 // ── Helpers & Utilities (Global Scope) ──
 const isEmojiOnly = (str) => {
     const testStr = (str || '').trim();
@@ -55,6 +60,12 @@ socket.on('new_message', (msg) => {
     if (msg.subtopico_id == (subtopicAtual ? subtopicAtual.id : null)) {
         renderSingleMessage(msg);
         if (msg.id > lastMsgId) lastMsgId = msg.id;
+        // Atualiza cache em memória para troca instantânea entre conversas
+        const cacheEntry = messageCache[msg.conversa_id] || { messages: [], lastFetchedAt: 0, lastMsgId: 0 };
+        cacheEntry.messages.push(msg);
+        cacheEntry.lastMsgId = msg.id;
+        cacheEntry.lastFetchedAt = Date.now();
+        messageCache[msg.conversa_id] = cacheEntry;
         
         const container = document.getElementById('chatMessages');
         const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
@@ -129,7 +140,7 @@ function renderConversasList() {
         const initial = c.display_nome ? c.display_nome.charAt(0).toUpperCase() : '?';
         const unread = (typeof unreadCounts !== 'undefined' ? unreadCounts[c.id] : 0) || 0;
         return `
-            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" ${c.wallpaper ? `style="--chat-wallpaper: url('${c.wallpaper}')"` : ''}>
+            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" onmouseenter="prefetchMensagens(${c.id})" ontouchstart="prefetchMensagens(${c.id})" ${c.wallpaper ? `style="--chat-wallpaper: url('${c.wallpaper}')"` : ''}>
                 <div class="chat-item-avatar">
                     ${c.display_foto
                         ? `<img src="${c.display_foto}" alt="" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`
@@ -147,6 +158,28 @@ function renderConversasList() {
             </div>`;
     }).join('');
 }
+
+// Prefetch de mensagens ao passar o mouse / tocar em uma conversa
+async function prefetchMensagens(conversaId) {
+    if (!conversaId) return;
+    const entry = messageCache[conversaId];
+    const now = Date.now();
+    if (entry && entry.lastFetchedAt && (now - entry.lastFetchedAt) < MESSAGE_CACHE_TTL) return;
+    // Evita prefetch redundante da conversa já aberta (loadMensagens já cobre)
+    if (conversaAtual && conversaAtual.id === conversaId) return;
+
+    try {
+        const msgs = await api(`/api/conversas/${conversaId}/mensagens`);
+        const cacheEntry = getMessageCacheEntry(conversaId);
+        cacheEntry.messages = msgs || [];
+        cacheEntry.lastMsgId = msgs.length ? msgs[msgs.length - 1].id : 0;
+        cacheEntry.lastFetchedAt = Date.now();
+        messageCache[conversaId] = cacheEntry;
+    } catch (err) {
+        console.warn('[Chat] Prefetch de mensagens falhou', err);
+    }
+}
+window.prefetchMensagens = prefetchMensagens;
 
 
 // ── Open Conversation ──
@@ -206,8 +239,18 @@ async function abrirConversa(id) {
     const editBtn = document.getElementById('btnEditGrupo');
     editBtn.classList.toggle('hidden', conv.tipo !== 'grupo');
 
-    // Parallel load data for faster opening
-    const promises = [loadMensagens()];
+    // SWR-style: se houver cache, renderiza imediatamente e busca delta em background
+    const hadCache = renderMessagesFromCache(id);
+    if (!hadCache) {
+        showMessagesSkeleton();
+    }
+
+    // Parallel load data for faster opening (mensagens + subtópicos)
+    const promises = [
+        loadMensagens().finally(() => {
+            if (!hadCache) hideMessagesSkeleton();
+        })
+    ];
     if (conv.tipo === 'grupo') {
         promises.push(loadSubtopicos());
         subBar.classList.remove('hidden');
@@ -493,6 +536,44 @@ async function deletarSubtopico(id) {
 }
 
 
+// ── Message Cache Helpers (SWR-style) ──
+function getMessageCacheEntry(conversaId) {
+    if (!messageCache[conversaId]) {
+        messageCache[conversaId] = { messages: [], lastFetchedAt: 0, lastMsgId: 0 };
+    }
+    return messageCache[conversaId];
+}
+
+function renderMessagesFromCache(conversaId) {
+    const entry = messageCache[conversaId];
+    if (!entry || !entry.messages || entry.messages.length === 0) return false;
+    const container = document.getElementById('chatMessages');
+    if (!container) return false;
+    container.innerHTML = '';
+    entry.messages.forEach(msg => renderSingleMessage(msg, false));
+    lastMsgId = entry.lastMsgId || (entry.messages[entry.messages.length - 1] && entry.messages[entry.messages.length - 1].id) || 0;
+    return true;
+}
+
+function showMessagesSkeleton() {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    const rows = Array.from({ length: 8 }).map((_, i) => `
+        <div class="skeleton-row ${i % 3 === 0 ? 'sent' : 'received'}">
+            <div class="skeleton-avatar pulse"></div>
+            <div class="skeleton-bubble pulse" style="width:${120 + (i * 37) % 180}px"></div>
+        </div>
+    `).join('');
+    container.innerHTML = `<div class="message-skeleton">${rows}</div>`;
+}
+
+function hideMessagesSkeleton() {
+    const sk = document.querySelector('.message-skeleton');
+    if (sk && sk.parentElement) {
+        sk.parentElement.removeChild(sk);
+    }
+}
+
 // ── Messages (id-based dedup, no more duplicates)
 // ── Render Single Message ──
 function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
@@ -585,6 +666,8 @@ async function loadMensagens() {
 
         const msgs = await api(endpoint);
         const container = document.getElementById('chatMessages');
+        const convId = conversaAtual.id;
+        const cacheEntry = getMessageCacheEntry(convId);
 
         if (!lastMsgId) {
             container.innerHTML = '';
@@ -592,20 +675,35 @@ async function loadMensagens() {
                 const label = subtopicAtual ? `"${subtopicAtual.nome}"` : 'esta conversa';
                 container.innerHTML = `<p class="empty-state" style="padding:2rem">Nenhuma mensagem em ${label}. Diga oi! 👋</p>`;
             }
+            // Reset cache on first page load
+            cacheEntry.messages = [];
         }
 
         if (msgs.length > 0 && container.querySelector('.empty-state')) {
             container.innerHTML = '';
         }
 
-        const fragment = document.createDocumentFragment();
-        msgs.forEach(msg => {
-            const bubble = renderSingleMessage(msg, false, true); // true = return element only
-            if (bubble) fragment.appendChild(bubble);
-            lastMsgId = msg.id;
-        });
-
         if (msgs.length > 0) {
+            if (container.querySelector('.empty-state')) {
+                container.innerHTML = '';
+            }
+
+            const fragment = document.createDocumentFragment();
+            const existingIds = new Set(cacheEntry.messages.map(m => m.id));
+
+            msgs.forEach(msg => {
+                const bubble = renderSingleMessage(msg, false, true); // true = return element only
+                if (bubble) fragment.appendChild(bubble);
+                if (!existingIds.has(msg.id)) {
+                    cacheEntry.messages.push(msg);
+                }
+                lastMsgId = msg.id;
+            });
+
+            cacheEntry.lastMsgId = lastMsgId;
+            cacheEntry.lastFetchedAt = Date.now();
+            messageCache[convId] = cacheEntry;
+
             container.appendChild(fragment);
             container.scrollTop = container.scrollHeight;
         }
@@ -861,6 +959,12 @@ async function enviarMensagem() {
             }
             
             if (res.id > lastMsgId) lastMsgId = res.id;
+            // Atualiza cache da conversa com a mensagem confirmada
+            const cacheEntry = getMessageCacheEntry(conversaAtual.id);
+            cacheEntry.messages.push(res);
+            cacheEntry.lastMsgId = lastMsgId;
+            cacheEntry.lastFetchedAt = Date.now();
+            messageCache[conversaAtual.id] = cacheEntry;
         } catch (err) {
             if (tempBubble) tempBubble.remove();
             showToast('Erro ao enviar mensagem', 'error');

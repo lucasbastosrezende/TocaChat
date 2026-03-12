@@ -349,17 +349,22 @@ def listar_usuarios():
 def listar_conversas():
     uid = get_user_id()
     db = get_db_g()
-    # 1) Buscar todas as conversas do usuário (sem subselects caros)
-    conversas = db.execute(
-        '''
-        SELECT c.*
+    # Note: Using a single JOIN on the latest message set is faster than correlated subqueries for many chats
+    conversas_query = '''
+        SELECT c.*, lm.conteudo as ultima_msg, lm.criado_em as ultima_msg_em,
+               (SELECT COUNT(*) FROM mensagens m2 WHERE m2.conversa_id = c.id) as total_msgs
         FROM conversas c
+        LEFT JOIN (
+            SELECT m.conversa_id, m.conteudo, m.criado_em
+            FROM mensagens m
+            WHERE m.id IN (SELECT MAX(id) FROM mensagens GROUP BY conversa_id)
+        ) lm ON c.id = lm.conversa_id
         WHERE c.id IN (
             SELECT conversa_id FROM conversa_membros WHERE usuario_id = ?
         )
-        ''',
-        (uid,)
-    ).fetchall()
+        ORDER BY COALESCE(ultima_msg_em, c.criado_em) DESC
+    '''
+    conversas = db.execute(conversas_query, (uid,)).fetchall()
 
     if not conversas:
         return jsonify([])
@@ -367,36 +372,7 @@ def listar_conversas():
     conv_ids = [c['id'] for c in conversas]
     placeholders = ','.join(['?'] * len(conv_ids))
     
-    # 2) Buscar último conteúdo de mensagem POR conversa (filtrado só nas conversas do usuário)
-    last_raw = db.execute(f'''
-        SELECT m.conversa_id, m.conteudo, m.criado_em
-        FROM mensagens m
-        JOIN (
-            SELECT conversa_id, MAX(criado_em) AS max_criado
-            FROM mensagens
-            WHERE conversa_id IN ({placeholders})
-            GROUP BY conversa_id
-        ) lm ON m.conversa_id = lm.conversa_id AND m.criado_em = lm.max_criado
-    ''', conv_ids).fetchall()
-
-    last_by_conv: Dict[int, Dict[str, Any]] = {}
-    for row in last_raw:
-        last_by_conv[row['conversa_id']] = {
-            'ultima_msg': row['conteudo'],
-            'ultima_msg_em': row['criado_em'],
-        }
-
-    # 3) Contagem TOTAL de mensagens por conversa (única query agrupada)
-    counts_raw = db.execute(f'''
-        SELECT conversa_id, COUNT(*) as total_msgs
-        FROM mensagens
-        WHERE conversa_id IN ({placeholders})
-        GROUP BY conversa_id
-    ''', conv_ids).fetchall()
-
-    counts_by_conv = {row['conversa_id']: row['total_msgs'] for row in counts_raw}
-
-    # 4) Buscar todos os membros de todas as conversas em UMA query
+    # Fetch all members for all returned conversations in a SINGLE query
     membros_raw = db.execute(f'''
         SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm 
@@ -412,21 +388,10 @@ def listar_conversas():
             membros_by_conv[cid] = []
         membros_by_conv[cid].append(dict(m))
 
-    # 5) Montar payload enriquecido com último conteúdo, contagem e membros
-    enriched = []
+    result = []
     for c in conversas:
         conv: Dict[str, Any] = dict(c)
         conv['membros'] = membros_by_conv.get(c['id'], [])
-
-        last_info = last_by_conv.get(c['id'])
-        if last_info:
-            conv['ultima_msg'] = last_info['ultima_msg']
-            conv['ultima_msg_em'] = last_info['ultima_msg_em']
-        else:
-            conv['ultima_msg'] = None
-            conv['ultima_msg_em'] = None
-
-        conv['total_msgs'] = counts_by_conv.get(c['id'], 0)
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
@@ -439,18 +404,12 @@ def listar_conversas():
                 conv['display_nome'] = 'Minhas Anotações' if len(conv['membros']) == 1 else 'Chat'
                 conv['display_foto'] = conv['membros'][0]['foto'] if conv['membros'] else ''
         else:
-            conv['display_nome'] = c.get('nome') or 'Grupo'
-            conv['display_foto'] = c.get('foto') or ''
+            conv['display_nome'] = c['nome'] or 'Grupo'
+            conv['display_foto'] = c['foto'] or ''
 
-        enriched.append(conv)
+        result.append(conv)
 
-    # 6) Ordenar em memória por última atividade (equivalente ao ORDER BY antigo)
-    enriched.sort(
-        key=lambda c: (c['ultima_msg_em'] or c['criado_em']),
-        reverse=True,
-    )
-
-    return jsonify(enriched)
+    return jsonify(result)
 
 
 @app.route('/api/conversas/<int:id>', methods=['GET'])

@@ -658,6 +658,54 @@ body::before {
     letter-spacing: 1px;
 }
 
+/* ══════════════════════════════════════════════
+   Chat — Message Skeletons (perceived instant load)
+   ══════════════════════════════════════════════ */
+.message-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1rem 0.5rem;
+}
+
+.skeleton-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.skeleton-row.sent {
+    justify-content: flex-end;
+}
+
+.skeleton-row.received {
+    justify-content: flex-start;
+}
+
+.skeleton-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    background: var(--bg-input);
+}
+
+.skeleton-bubble {
+    height: 14px;
+    border-radius: 999px;
+    background: var(--bg-input);
+}
+
+.pulse {
+    background: linear-gradient(90deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.16) 50%, rgba(255,255,255,0.06) 100%);
+    background-size: 200% 100%;
+    animation: pulseSkeleton 1.4s ease-in-out infinite;
+}
+
+@keyframes pulseSkeleton {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 .calendar-day {
     aspect-ratio: 1;
     display: flex;

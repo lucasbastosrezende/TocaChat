@@ -139,6 +139,8 @@ def init_db():
     # ── Performance Indexes ──
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_conversa_sub ON mensagens(conversa_id, subtopico_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_conversa_criado ON mensagens(conversa_id, criado_em)')
+    # Composite index optimized for "WHERE conversa_id = ? AND id > ?" queries
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_conversa_id ON mensagens(conversa_id, id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversa_membros_usuario ON conversa_membros(usuario_id, conversa_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_reply ON mensagens(reply_to_id)')
