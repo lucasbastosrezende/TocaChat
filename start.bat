@@ -9,6 +9,11 @@ echo Iniciando Gateway Unificado na porta 8080...
 start cmd /k "node gateway.js"
 
 echo Sistema iniciado! Mantenha as janelas abertas.
-echo Para gerar seu link publico Cloudflare, rode em um NOVO terminal:
-echo cloudflared tunnel --url http://localhost:8080
+echo.
+echo === CLOUDFLARE TUNNEL (GRATUITO) ===
+echo Para gerar seu link publico (sem precisar de dominio), rode:
+echo .\cloudflared.exe tunnel --url http://localhost:8080
+echo.
+echo O link gerado terminara em .trycloudflare.com
+echo ===================================
 pause

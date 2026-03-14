@@ -225,7 +225,7 @@ def registrar():
         db.commit()
         user_id = cursor.lastrowid
         session['usuario_id'] = user_id
-        user = db.execute('SELECT id, username, nome, bio, foto FROM usuarios WHERE id = ?', (user_id,)).fetchone()
+        user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto FROM usuarios WHERE id = ?', (user_id,)).fetchone()
         return jsonify(dict(user)), 201
     except Exception as e:
         if 'UNIQUE' in str(e):
@@ -250,7 +250,8 @@ def login():
     session['usuario_id'] = user['id']
     return jsonify({
         'id': user['id'], 'username': user['username'],
-        'nome': user['nome'], 'bio': user['bio'], 'foto': user['foto'],
+        'nome': user['nome'] if user['nome'] else user['username'],
+        'bio': user['bio'], 'foto': user['foto'],
         'wallpaper': user['wallpaper'],
         'wallpaper_placeholder': user['wallpaper_placeholder']
     })
@@ -268,7 +269,7 @@ def me():
     if not uid:
         return jsonify({'autenticado': False}), 401
     db = get_db_g()
-    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
     if not user:
         session.clear()
         return jsonify({'autenticado': False}), 401
@@ -285,10 +286,11 @@ def atualizar_perfil():
     uid = get_user_id()
     db = get_db_g()
     
-    # Update base profile
+    # Update base profile - Ensure name doesn't become empty string
+    new_nome = data.get('nome', '').strip()
     db.execute(
         'UPDATE usuarios SET nome=?, bio=?, atualizado_em=? WHERE id=?',
-        (data.get('nome', ''), data.get('bio', ''), agora_manaus().isoformat(), uid)
+        (new_nome if new_nome else None, data.get('bio', ''), agora_manaus().isoformat(), uid)
     )
     
     # Handle wallpaper_placeholder separately if provided
@@ -299,7 +301,7 @@ def atualizar_perfil():
         )
         
     db.commit()
-    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
     return jsonify(dict(user))
 
 
@@ -379,7 +381,7 @@ def listar_wallpapers():
 def listar_usuarios():
     db = get_db_g()
     users = db.execute(
-        'SELECT id, username, nome, bio, foto, wallpaper FROM usuarios ORDER BY nome'
+        'SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper FROM usuarios ORDER BY nome'
     ).fetchall()
     return jsonify([dict(u) for u in users])
 
@@ -422,7 +424,7 @@ def listar_conversas():
         if c['tipo'] == 'direto':
             # Derivar apenas nome/foto do outro participante em uma query leve
             other = db.execute('''
-                SELECT u.nome, u.foto 
+                SELECT COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto 
                 FROM conversa_membros cm 
                 JOIN usuarios u ON cm.usuario_id = u.id
                 WHERE cm.conversa_id = ? AND cm.usuario_id != ?
@@ -458,7 +460,7 @@ def obter_conversa(id):
         return jsonify({'erro': 'Conversa não encontrada'}), 404
     conv = dict(conv)
     membros_raw = db.execute('''
-        SELECT u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
+        SELECT u.id, u.username, COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm JOIN usuarios u ON cm.usuario_id = u.id
         WHERE cm.conversa_id = ?
     ''', (id,)).fetchall()
@@ -677,8 +679,8 @@ def listar_mensagens(id):
     if after_id:
         if subtopico_id:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -688,8 +690,8 @@ def listar_mensagens(id):
             ''', (id, int(after_id), int(subtopico_id))).fetchall()
         else:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -700,8 +702,8 @@ def listar_mensagens(id):
     elif before_id:
         if subtopico_id:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -711,8 +713,8 @@ def listar_mensagens(id):
             ''', (id, int(before_id), int(subtopico_id), limit)).fetchall()
         else:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -724,8 +726,8 @@ def listar_mensagens(id):
     else:
         if subtopico_id:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -735,8 +737,8 @@ def listar_mensagens(id):
             ''', (id, int(subtopico_id), limit)).fetchall()
         else:
             msgs = db.execute('''
-                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, ru.nome as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -773,8 +775,8 @@ def enviar_mensagem(id):
     )
     db.commit()
     msg = db.execute('''
-        SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, ru.nome as reply_author
+        SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -803,7 +805,7 @@ def chat_sync():
              ORDER BY m2.criado_em DESC LIMIT 1) as ultima_msg,
             (SELECT m3.criado_em FROM mensagens m3 WHERE m3.conversa_id = c.id 
              ORDER BY m3.criado_em DESC LIMIT 1) as ultima_msg_em,
-            pm.conteudo as pinned_content, u_pm.nome as pinned_author
+            pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ""), u_pm.username) as pinned_author
         FROM conversas c
         LEFT JOIN mensagens pm ON c.pinned_message_id = pm.id
         LEFT JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -818,7 +820,7 @@ def chat_sync():
         conv_ids = [c['id'] for c in conversas_raw]
         placeholders = ','.join(['?'] * len(conv_ids))
         membros_raw = db.execute(f'''
-            SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
+            SELECT cm.conversa_id, u.id, u.username, COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper, u.bio
             FROM conversa_membros cm 
             JOIN usuarios u ON cm.usuario_id = u.id
             WHERE cm.conversa_id IN ({placeholders})
@@ -846,7 +848,7 @@ def chat_sync():
                 if subtopico_id:
                     # Overwrite pinned info with subtopic's pin
                     pin = db.execute('''
-                        SELECT pm.id, pm.conteudo as pinned_content, u_pm.nome as pinned_author
+                        SELECT pm.id, pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ""), u_pm.username) as pinned_author
                         FROM grupo_subtopicos gs
                         JOIN mensagens pm ON gs.pinned_message_id = pm.id
                         JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -870,8 +872,8 @@ def chat_sync():
     mensagens = []
     if conversa_id:
         query = '''
-            SELECT m.*, u.nome as autor_nome, u.foto as autor_foto,
-                   r.conteudo as reply_content, ru.nome as reply_author
+            SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto,
+                   r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
             FROM mensagens m 
             JOIN usuarios u ON m.usuario_id = u.id
             LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -1033,8 +1035,8 @@ def restaurar_mensagem(msg_id):
 
     # Fetch full message to notify clients
     res_msg = db.execute('''
-        SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, ru.nome as reply_author
+        SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
