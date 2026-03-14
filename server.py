@@ -165,7 +165,7 @@ def webrtc_config():
         peer_secure = (peer_port == 443) or request.is_secure
 
     # ICE servers (STUN + optional TURN)
-    ice_servers = [
+    ice_servers: list[dict[str, Any]] = [
         {'urls': 'stun:stun.l.google.com:19302'},
         {'urls': 'stun:stun1.l.google.com:19302'},
     ]
@@ -458,7 +458,7 @@ def obter_conversa(id):
     ).fetchone()
     if not conv:
         return jsonify({'erro': 'Conversa não encontrada'}), 404
-    conv = dict(conv)
+    conv: Dict[str, Any] = dict(conv)
     membros_raw = db.execute('''
         SELECT u.id, u.username, COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm JOIN usuarios u ON cm.usuario_id = u.id
