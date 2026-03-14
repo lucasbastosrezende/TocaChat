@@ -738,6 +738,8 @@ async function joinCall() {
                 return;
             }
 
+            const myIdNum = Number(currentUser.id);
+
             for (const m of others) {
                 const remoteIdNum = Number(m.id);
                 if (isNaN(myIdNum) || isNaN(remoteIdNum) || myIdNum >= remoteIdNum) continue;
