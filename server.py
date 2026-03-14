@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_from_directory, session, g  # type: ignore
 from flask_cors import CORS  # type: ignore
 from flask_socketio import SocketIO, emit, join_room, leave_room  # type: ignore
+from werkzeug.middleware.proxy_fix import ProxyFix # type: ignore
 from database import get_db, init_db  # type: ignore
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -13,6 +14,7 @@ from typing import Any, Dict
 from PIL import Image as PILImage  # type: ignore
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.secret_key = os.urandom(32)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
 CORS(app, supports_credentials=True)
@@ -140,17 +142,11 @@ def webrtc_config():
     fall back to public PeerJS cloud, otherwise they end up on different brokers.
     """
     # PeerJS broker (signaling) settings
-    # Default to localhost if not set, or extract from request host
-    env_host = os.getenv('PEERJS_HOST', '').strip()
-    # Se estivermos atrás do gateway ou túnel sem host fixo, usamos o host do request
-    peer_host = env_host or request.host.split(':')[0]
-    
+    peer_host = os.getenv('PEERJS_HOST', '').strip() or request.host.split(':')[0]
     peer_path = os.getenv('PEERJS_PATH', '/myapp').strip() or '/myapp'
 
     try:
-        # Default to 443 if a custom host is provided (likely Cloudflare/HTTPS)
-        default_port = 443 if env_host else 9000
-        peer_port = int(os.getenv('PEERJS_PORT', str(default_port)))
+        peer_port = int(os.getenv('PEERJS_PORT', '9000'))
     except ValueError:
         peer_port = 9000
 
@@ -161,11 +157,10 @@ def webrtc_config():
     elif peer_secure_env in ('0', 'false', 'no', 'off'):
         peer_secure = False
     else:
-        # Default to True if we are using port 443 or if the request is secure
-        peer_secure = (peer_port == 443) or request.is_secure
+        peer_secure = request.is_secure
 
     # ICE servers (STUN + optional TURN)
-    ice_servers: list[dict[str, Any]] = [
+    ice_servers = [
         {'urls': 'stun:stun.l.google.com:19302'},
         {'urls': 'stun:stun1.l.google.com:19302'},
     ]
@@ -225,7 +220,7 @@ def registrar():
         db.commit()
         user_id = cursor.lastrowid
         session['usuario_id'] = user_id
-        user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto FROM usuarios WHERE id = ?', (user_id,)).fetchone()
+        user = db.execute('SELECT id, username, nome, bio, foto FROM usuarios WHERE id = ?', (user_id,)).fetchone()
         return jsonify(dict(user)), 201
     except Exception as e:
         if 'UNIQUE' in str(e):
@@ -250,10 +245,8 @@ def login():
     session['usuario_id'] = user['id']
     return jsonify({
         'id': user['id'], 'username': user['username'],
-        'nome': user['nome'] if user['nome'] else user['username'],
-        'bio': user['bio'], 'foto': user['foto'],
-        'wallpaper': user['wallpaper'],
-        'wallpaper_placeholder': user['wallpaper_placeholder']
+        'nome': user['nome'], 'bio': user['bio'], 'foto': user['foto'],
+        'wallpaper': user['wallpaper']
     })
 
 
@@ -269,7 +262,7 @@ def me():
     if not uid:
         return jsonify({'autenticado': False}), 401
     db = get_db_g()
-    user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper FROM usuarios WHERE id = ?', (uid,)).fetchone()
     if not user:
         session.clear()
         return jsonify({'autenticado': False}), 401
@@ -285,23 +278,12 @@ def atualizar_perfil():
     data = request.json
     uid = get_user_id()
     db = get_db_g()
-    
-    # Update base profile - Ensure name doesn't become empty string
-    new_nome = data.get('nome', '').strip()
     db.execute(
         'UPDATE usuarios SET nome=?, bio=?, atualizado_em=? WHERE id=?',
-        (new_nome if new_nome else None, data.get('bio', ''), agora_manaus().isoformat(), uid)
+        (data.get('nome', ''), data.get('bio', ''), agora_manaus().isoformat(), uid)
     )
-    
-    # Handle wallpaper_placeholder separately if provided
-    if 'wallpaper_placeholder' in data:
-        db.execute(
-            'UPDATE usuarios SET wallpaper_placeholder=?, atualizado_em=? WHERE id=?',
-            (data.get('wallpaper_placeholder', ''), agora_manaus().isoformat(), uid)
-        )
-        
     db.commit()
-    user = db.execute('SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper, wallpaper_placeholder FROM usuarios WHERE id = ?', (uid,)).fetchone()
+    user = db.execute('SELECT id, username, nome, bio, foto, wallpaper FROM usuarios WHERE id = ?', (uid,)).fetchone()
     return jsonify(dict(user))
 
 
@@ -315,19 +297,14 @@ def upload_foto():
     if not file or not allowed_file(file.filename):
         return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
 
-    tipo = request.form.get('tipo', 'avatar')  # 'avatar', 'wallpaper', or 'wallpaper_placeholder'
-    
-    # Selection of directory based on type
-    is_global_wallpaper = (tipo == 'wallpaper_placeholder')
-    target_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'images') if is_global_wallpaper else UPLOAD_DIR
-    
     ext = file.filename.rsplit('.', 1)[1].lower()
-    filename = f"{uuid.uuid4().hex}.{ext}" if not is_global_wallpaper else f"custom_{uuid.uuid4().hex}.{ext}"
-    filepath = os.path.join(target_dir, filename)
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
     file.save(filepath)
 
     uid = get_user_id()
     db = get_db_g()
+    tipo = request.form.get('tipo', 'avatar')  # 'avatar' or 'wallpaper'
     col = 'wallpaper' if tipo == 'wallpaper' else 'foto'
 
     # Server-side compression (avatar: 256px, wallpaper: 1280px)
@@ -336,15 +313,8 @@ def upload_foto():
     filepath = compress_image(filepath, max_size=max_sz, quality=qual)
     filename = os.path.basename(filepath)
 
-    if is_global_wallpaper:
-        foto_url = f"/static/images/{filename}"
-        # We don't delete old global wallpapers as they are shared
-        db.execute('UPDATE usuarios SET wallpaper_placeholder=?, atualizado_em=? WHERE id=?',
-                   (foto_url, agora_manaus().isoformat(), uid))
-        db.commit()
-        return jsonify({'foto': foto_url, 'tipo': tipo})
-
-    # Remove old photo/wallpaper (only for private avatars/wallpapers)
+    
+    # Remove old photo/wallpaper
     old = db.execute(f'SELECT {col} FROM usuarios WHERE id = ?', (uid,)).fetchone()
     if old and old[col]:
         old_path = os.path.join(UPLOAD_DIR, os.path.basename(old[col]))
@@ -363,17 +333,14 @@ def upload_foto():
     return jsonify({'foto': foto_url, 'tipo': tipo})
 
 
-@app.route('/api/wallpapers', methods=['GET'])
-def listar_wallpapers():
-    """List all available wallpapers in static/images."""
-    img_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'images')
-    files = []
-    if os.path.exists(img_dir):
-        # Only return common image formats, skip the abstract avatar video
-        valid_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
-        files = [f"/static/images/{f}" for f in os.listdir(img_dir) 
-                 if f.lower().endswith(valid_extensions)]
-    return jsonify(files)
+@app.route('/api/stickers', methods=['GET'])
+@login_required
+def listar_stickers():
+    sticker_dir = os.path.join(app.static_folder, 'stickers', 'default')
+    if not os.path.exists(sticker_dir):
+        return jsonify([])
+    files = [f for f in os.listdir(sticker_dir) if allowed_file(f)]
+    return jsonify([f"/static/stickers/default/{f}" for f in files])
 
 
 @app.route('/api/usuarios', methods=['GET'])
@@ -381,7 +348,7 @@ def listar_wallpapers():
 def listar_usuarios():
     db = get_db_g()
     users = db.execute(
-        'SELECT id, username, COALESCE(NULLIF(nome, ""), username) as nome, bio, foto, wallpaper FROM usuarios ORDER BY nome'
+        "SELECT id, username, COALESCE(NULLIF(nome, ''), username) AS nome, bio, foto, wallpaper FROM usuarios ORDER BY nome"
     ).fetchall()
     return jsonify([dict(u) for u in users])
 
@@ -422,9 +389,9 @@ def listar_conversas():
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
-            # Derivar apenas nome/foto/wallpaper do outro participante em uma query leve
+            # Derivar apenas nome/foto do outro participante em uma query leve
             other = db.execute('''
-                SELECT COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper
+                SELECT COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto 
                 FROM conversa_membros cm 
                 JOIN usuarios u ON cm.usuario_id = u.id
                 WHERE cm.conversa_id = ? AND cm.usuario_id != ?
@@ -433,16 +400,13 @@ def listar_conversas():
             if other:
                 conv['display_nome'] = other['nome']
                 conv['display_foto'] = other['foto'] or ''
-                conv['display_wallpaper'] = other['wallpaper'] or ''
             else:
                 # Fallback se for um chat "consigo mesmo" ou estado inconsistente
                 conv['display_nome'] = 'Minhas Anotações'
                 conv['display_foto'] = ''
-                conv['display_wallpaper'] = ''
         else:
             conv['display_nome'] = c['nome'] or 'Grupo'
             conv['display_foto'] = c['foto'] or ''
-            conv['display_wallpaper'] = c['wallpaper'] or ''
 
         result.append(conv)
 
@@ -461,9 +425,9 @@ def obter_conversa(id):
     ).fetchone()
     if not conv:
         return jsonify({'erro': 'Conversa não encontrada'}), 404
-    conv: Dict[str, Any] = dict(conv)
+    conv = dict(conv)
     membros_raw = db.execute('''
-        SELECT u.id, u.username, COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper, u.bio
+        SELECT u.id, u.username, COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm JOIN usuarios u ON cm.usuario_id = u.id
         WHERE cm.conversa_id = ?
     ''', (id,)).fetchall()
@@ -472,11 +436,9 @@ def obter_conversa(id):
         other = [m for m in conv['membros'] if m['id'] != uid]
         conv['display_nome'] = other[0]['nome'] if other else 'Chat'
         conv['display_foto'] = other[0]['foto'] or '' if other else ''
-        conv['display_wallpaper'] = other[0]['wallpaper'] or '' if other else ''
     else:
         conv['display_nome'] = conv.get('nome') or 'Grupo'
         conv['display_foto'] = conv.get('foto') or ''
-        conv['display_wallpaper'] = conv.get('wallpaper') or ''
     return jsonify(conv)
 
 
@@ -677,15 +639,13 @@ def sair_grupo(id):
 def listar_mensagens(id):
     db = get_db_g()
     after_id = request.args.get('after_id', '')
-    before_id = request.args.get('before_id', '')
     subtopico_id = request.args.get('subtopico_id', '')
-    limit = request.args.get('limit', 13, type=int)
 
     if after_id:
         if subtopico_id:
             msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -695,8 +655,8 @@ def listar_mensagens(id):
             ''', (id, int(after_id), int(subtopico_id))).fetchall()
         else:
             msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -704,53 +664,29 @@ def listar_mensagens(id):
                 WHERE m.conversa_id = ? AND m.id > ? AND m.subtopico_id IS NULL
                 ORDER BY m.criado_em ASC
             ''', (id, int(after_id))).fetchall()
-    elif before_id:
-        if subtopico_id:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.id < ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT ?
-            ''', (id, int(before_id), int(subtopico_id), limit)).fetchall()
-        else:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.id < ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT ?
-            ''', (id, int(before_id), limit)).fetchall()
-        msgs = list(reversed(msgs))
     else:
         if subtopico_id:
             msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT ?
-            ''', (id, int(subtopico_id), limit)).fetchall()
+                ORDER BY m.criado_em DESC LIMIT 50
+            ''', (id, int(subtopico_id))).fetchall()
         else:
             msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
                 FROM mensagens m 
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT ?
-            ''', (id, limit)).fetchall()
+                ORDER BY m.criado_em DESC LIMIT 50
+            ''', (id,)).fetchall()
         msgs = list(reversed(msgs))
     return jsonify([dict(m) for m in msgs])
 
@@ -780,8 +716,8 @@ def enviar_mensagem(id):
     )
     db.commit()
     msg = db.execute('''
-        SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+        SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -810,7 +746,7 @@ def chat_sync():
              ORDER BY m2.criado_em DESC LIMIT 1) as ultima_msg,
             (SELECT m3.criado_em FROM mensagens m3 WHERE m3.conversa_id = c.id 
              ORDER BY m3.criado_em DESC LIMIT 1) as ultima_msg_em,
-            pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ""), u_pm.username) as pinned_author
+            pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
         FROM conversas c
         LEFT JOIN mensagens pm ON c.pinned_message_id = pm.id
         LEFT JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -825,7 +761,7 @@ def chat_sync():
         conv_ids = [c['id'] for c in conversas_raw]
         placeholders = ','.join(['?'] * len(conv_ids))
         membros_raw = db.execute(f'''
-            SELECT cm.conversa_id, u.id, u.username, COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper, u.bio
+            SELECT cm.conversa_id, u.id, u.username, COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto, u.wallpaper, u.bio
             FROM conversa_membros cm 
             JOIN usuarios u ON cm.usuario_id = u.id
             WHERE cm.conversa_id IN ({placeholders})
@@ -853,7 +789,7 @@ def chat_sync():
                 if subtopico_id:
                     # Overwrite pinned info with subtopic's pin
                     pin = db.execute('''
-                        SELECT pm.id, pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ""), u_pm.username) as pinned_author
+                        SELECT pm.id, pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
                         FROM grupo_subtopicos gs
                         JOIN mensagens pm ON gs.pinned_message_id = pm.id
                         JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -877,8 +813,8 @@ def chat_sync():
     mensagens = []
     if conversa_id:
         query = '''
-            SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto,
-                   r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+            SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto,
+                   r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
             FROM mensagens m 
             JOIN usuarios u ON m.usuario_id = u.id
             LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -1040,8 +976,8 @@ def restaurar_mensagem(msg_id):
 
     # Fetch full message to notify clients
     res_msg = db.execute('''
-        SELECT m.*, COALESCE(NULLIF(u.nome, ""), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ""), ru.username) as reply_author
+        SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -1055,6 +991,19 @@ def restaurar_mensagem(msg_id):
     return jsonify({'status': 'ok', 'mensagem': msg_dict}), 200
 
 
+@app.route('/api/conversas/<int:id>/lixeira', methods=['GET'])
+@login_required
+def lixeira_mensagens(id):
+    uid = get_user_id()
+    db = get_db_g()
+    msgs = db.execute('''
+        SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username
+        FROM mensagens m 
+        JOIN usuarios u ON m.usuario_id = u.id
+        WHERE m.conversa_id = ? AND m.usuario_id = ? AND m.excluido_em IS NOT NULL
+        ORDER BY m.excluido_em DESC
+    ''', (id, uid)).fetchall()
+    return jsonify([dict(m) for m in msgs])
 
 
 @app.route('/api/conversas/<int:id>/pin', methods=['POST'])
@@ -1086,62 +1035,6 @@ def fixar_mensagem(id):
     db.commit()
     return jsonify({'ok': True})
 
-
-STICKERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'stickers')
-os.makedirs(STICKERS_DIR, exist_ok=True)
-
-@app.route('/api/stickers', methods=['GET'])
-@login_required
-def listar_stickers():
-    uid = get_user_id()
-    db = get_db_g()
-    stickers = db.execute('SELECT * FROM stickers WHERE usuario_id = ? ORDER BY criado_em DESC', (uid,)).fetchall()
-    return jsonify([dict(s) for s in stickers])
-
-@app.route('/api/stickers/import', methods=['POST'])
-@login_required
-def importar_sticker():
-    if 'sticker' not in request.files:
-        return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
-    
-    file = request.files['sticker']
-    if not file or not file.filename:
-        return jsonify({'erro': 'Arquivo inválido'}), 400
-    
-    ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-    allowed_stickers = {'png', 'webp', 'jpg', 'jpeg'}
-    if ext not in allowed_stickers:
-        return jsonify({'erro': f'Formato .{ext} não suportado para figurinha.'}), 400
-    
-    filename = f"sticker_{uuid.uuid4().hex}.webp"
-    filepath = os.path.join(STICKERS_DIR, filename)
-    
-    # Process image to WebP with transparency
-    try:
-        img = PILImage.open(file)
-        # Resize to max 512x512 for stickers (WhatsApp standard)
-        if img.width > 512 or img.height > 512:
-            img.thumbnail((512, 512), PILImage.LANCZOS)
-        
-        img.save(filepath, 'WEBP', quality=80, method=4)
-        img.close()
-    except Exception as e:
-        app.logger.error(f"Sticker processing failed: {e}")
-        return jsonify({'erro': 'Falha ao processar figurinha'}), 500
-    
-    uid = get_user_id()
-    db = get_db_g()
-    sticker_url = f"/static/stickers/{filename}"
-    cursor = db.execute(
-        'INSERT INTO stickers (usuario_id, url) VALUES (?, ?)',
-        (uid, sticker_url)
-    )
-    db.commit()
-    
-    return jsonify({
-        'id': cursor.lastrowid,
-        'url': sticker_url
-    }), 201
 
 @app.route('/api/conversas/<int:id>/media', methods=['POST'])
 @login_required
@@ -1625,4 +1518,4 @@ def on_leave_conv(data):
 # ══════════════════════════════════════════════
 if __name__ == '__main__':
     print("TocaDoConhecimento rodando em http://localhost:3000 (com WebSockets)")
-    socketio.run(app, host='0.0.0.0', port=3000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=3000, debug=False)

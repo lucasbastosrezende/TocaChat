@@ -1,0 +1,4 @@
+Banco de dados inicializado com sucesso!
+TocaDoConhecimento rodando em http://localhost:3000 (com WebSockets)
+ * Serving Flask app 'server'
+ * Debug mode: off

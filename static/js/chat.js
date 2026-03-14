@@ -16,21 +16,9 @@ let replyState = null; // { id, author, text }
 const messageCache = {}; // PERF FIX: escopo único global, controlado pelos helpers abaixo
 const MESSAGE_CACHE_TTL = 60000; // PERF FIX: TTL aumentado para 60s para reduzir re-fetching sem crescer demais
 const MESSAGE_CACHE_MAX_CONVS = 20; // PERF FIX: máximo de conversas em cache (evita crescimento infinito)
-const MAX_RENDERED_MESSAGES = 13; // RENDERING LIMIT: Initial load limited to 13 messages per user request
+const MAX_RENDERED_MESSAGES = 50; // PERF FIX: limita DOM a 50 mensagens visíveis por conversa (virtual scroll simples)
 
 // ── Helpers & Utilities (Global Scope) ──
-function scrollToBottom(force = false) {
-    const container = document.getElementById('chatMessages');
-    if (!container) return;
-    if (force) {
-        container.scrollTop = container.scrollHeight;
-    } else {
-        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 200;
-        if (wasAtBottom) container.scrollTop = container.scrollHeight;
-    }
-}
-window.scrollToBottom = scrollToBottom;
-
 const isEmojiOnly = (str) => {
     const testStr = (str || '').trim();
     if (!testStr) return false;
@@ -82,8 +70,9 @@ socket.on('new_message', (msg) => {
         cacheEntry.lastFetchedAt = Date.now();
         messageCache[msg.conversa_id] = cacheEntry;
         
-        scrollToBottom();
         const container = document.getElementById('chatMessages');
+        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
+        if (wasAtBottom) container.scrollTop = container.scrollHeight;
         trimMessageDom(container);
     }
 });
@@ -155,11 +144,11 @@ function renderConversasList() {
         const initial = c.display_nome ? c.display_nome.charAt(0).toUpperCase() : '?';
         const unread = (typeof unreadCounts !== 'undefined' ? unreadCounts[c.id] : 0) || 0;
         return `
-            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" onmouseenter="prefetchMensagens(${c.id})" ontouchstart="prefetchMensagens(${c.id})" ${c.display_wallpaper ? `style="--chat-wallpaper: url('${c.display_wallpaper}')"` : ''}>
+            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" onmouseenter="prefetchMensagens(${c.id})" ontouchstart="prefetchMensagens(${c.id})" ${c.wallpaper ? `style="--chat-wallpaper: url('${c.wallpaper}')"` : ''}>
                 <div class="chat-item-avatar">
                     ${c.display_foto
                         ? `<img src="${c.display_foto}" alt="" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`
-                        : (isGroup ? `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-users" style="opacity: 0.7;"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="19" cy="4" r="3"/></svg>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`)}
+                        : (isGroup ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`)}
                 </div>
                 <div class="chat-item-info">
                     <div class="chat-item-name">${c.display_nome}</div>
@@ -168,7 +157,7 @@ function renderConversasList() {
                 <div style="display: flex; align-items: center; gap: 0.25rem;">
                     ${unread > 0 ? `<span class="chat-unread-badge">${unread > 99 ? '99+' : unread}</span>` : ''}
                     ${c.ultima_msg_em ? `<span class="chat-item-time">${formatTime(c.ultima_msg_em)}</span>` : ''}
-                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>` : ''}
+                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa">🗑️</button>` : ''}
                 </div>
             </div>`;
     }).join('');
@@ -244,7 +233,7 @@ async function abrirConversa(id) {
     const avatarEl = document.getElementById('chatAvatar');
     avatarEl.innerHTML = conv.display_foto
         ? `<img src="${conv.display_foto}" alt="">`
-        : (conv.tipo === 'grupo' ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`);
+        : (conv.tipo === 'grupo' ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`);
     
     if (isDirect && otherUser) {
         avatarEl.style.cursor = 'pointer';
@@ -256,9 +245,7 @@ async function abrirConversa(id) {
 
     // Show unified call button
     document.getElementById('btnCallAudio').classList.remove('hidden');
-    document.getElementById('btnCallAudio').onclick = () => {
-        if (typeof startCall === 'function') startCall();
-    };
+    document.getElementById('btnCallAudio').onclick = () => joinCall();
     document.getElementById('btnCallVideo').classList.add('hidden'); // Hidden — camera toggles inside call
 
     const subtitle = conv.tipo === 'grupo'
@@ -291,9 +278,6 @@ async function abrirConversa(id) {
     renderParticipantsSidebar(conv);
     renderConversasList();
     renderPinnedMessageBar();
-    
-    // Apply background
-    applyActiveChatWallpaper(conv.display_wallpaper);
     
     await Promise.all(promises);
     document.getElementById('chatInput').focus();
@@ -370,7 +354,7 @@ function renderParticipantsSidebar(conv) {
                 <div class="participant-avatar">
                     ${m.foto 
                         ? `<img src="${m.foto}" alt="${m.nome}" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">` 
-                        : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`}
+                        : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`}
                 </div>
                 <div class="participant-info">
                     <span class="participant-name">${m.nome}</span>
@@ -397,10 +381,7 @@ async function loadSubtopicos() {
 function renderSubtopicsTabs() {
     const container = document.getElementById('subtopicsTabs');
     // "Geral" is always first and NOT draggable.
-    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false" style="display: flex; align-items: center; gap: 0.4rem;">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Geral
-    </button>`;
+    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false">💬 Geral</button>`;
     
     subtopicos.forEach(s => {
         const isActive = subtopicAtual && subtopicAtual.id === s.id ? 'active' : '';
@@ -612,7 +593,6 @@ function renderMessagesFromCache(conversaId) {
     container.innerHTML = '';
     entry.messages.forEach(msg => renderSingleMessage(msg, false));
     lastMsgId = entry.lastMsgId || (entry.messages[entry.messages.length - 1] && entry.messages[entry.messages.length - 1].id) || 0;
-    setTimeout(() => scrollToBottom(true), 10);
     return true;
 }
 
@@ -667,7 +647,7 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
             optimistic.dataset.msgId = msg.id;
             optimistic.querySelector('.msg-time').textContent = formatTime(msg.criado_em);
             const actions = optimistic.querySelector('.msg-actions');
-            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>`;
+            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>`;
             return optimistic;
         }
     }
@@ -677,18 +657,16 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     if (msg.id) bubble.dataset.msgId = msg.id;
     if (isOptimistic) bubble.classList.add('msg-sending');
 
-    const isSticker = msg.media_url && msg.media_url.includes('/static/stickers/');
+    const isSticker = msg.media_url && msg.media_url.includes('/stickers/');
     if (isSticker) bubble.classList.add('msg-sticker');
 
     let mediaHtml = '';
     if (msg.media_url) {
         const ext = msg.media_url.split('.').pop().toLowerCase();
         if (['mp4','webm','mov'].includes(ext)) {
-            mediaHtml = `<video src="${msg.media_url}" onloadedmetadata="scrollToBottom()" controls class="msg-media" style="width:100%;max-height:300px;border-radius:8px;margin:0.25rem 0;aspect-ratio:16/9;object-fit:cover" preload="metadata"></video>`;
-        } else if (isSticker) {
-            mediaHtml = `<img src="${msg.media_url}" onload="scrollToBottom()" class="msg-sticker-img" loading="lazy" style="cursor:pointer" onclick="abrirLightbox('${msg.media_url}')">`;
+            mediaHtml = `<video src="${msg.media_url}" controls class="msg-media" style="width:100%;max-height:300px;border-radius:8px;margin:0.25rem 0;aspect-ratio:16/9;object-fit:cover" preload="metadata"></video>`;
         } else {
-            mediaHtml = `<img src="${msg.media_url}" onload="scrollToBottom()" class="msg-media" loading="lazy" style="width:100%;min-height:100px;max-height:300px;border-radius:8px;margin:0.25rem 0;cursor:pointer;object-fit:cover" onclick="abrirLightbox('${msg.media_url}')">`;
+            mediaHtml = `<img src="${msg.media_url}" class="msg-media" loading="lazy" style="${isSticker ? 'width:auto;max-width:180px;height:auto;aspect-ratio:auto;object-fit:contain;background:none' : 'width:100%;min-height:100px;max-height:300px;object-fit:cover'};border-radius:8px;margin:0.25rem 0;cursor:pointer" onclick="window.open('${msg.media_url}','_blank')">`;
         }
     }
 
@@ -708,15 +686,9 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     bubble.innerHTML = `
         <div class="msg-actions">
             ${msg.id ? `
-                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
-                </button>
-                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pin"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
-                </button>
-                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-                </button>` : ''}
+                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder">↩️</button>
+                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar">📌</button>
+                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>` : ''}
             ` : ''}
         </div>
         ${!isMine ? `<div class="msg-author">
@@ -738,17 +710,12 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     return bubble;
 }
 
-async function loadMensagens(beforeId = null) {
+async function loadMensagens() {
     if (!conversaAtual) return;
     try {
         let endpoint = `/api/conversas/${conversaAtual.id}/mensagens`;
         const params = [];
-        if (beforeId) {
-            params.push(`before_id=${beforeId}`);
-        } else if (lastMsgId) {
-            params.push(`after_id=${lastMsgId}`);
-        }
-        
+        if (lastMsgId) params.push(`after_id=${lastMsgId}`);
         if (subtopicAtual) params.push(`subtopico_id=${subtopicAtual.id}`);
         if (params.length) endpoint += '?' + params.join('&');
 
@@ -757,7 +724,7 @@ async function loadMensagens(beforeId = null) {
         const convId = conversaAtual.id;
         const cacheEntry = getMessageCacheEntry(convId);
 
-        if (!lastMsgId && !beforeId) {
+        if (!lastMsgId) {
             container.innerHTML = '';
             if (msgs.length === 0) {
                 const label = subtopicAtual ? `"${subtopicAtual.nome}"` : 'esta conversa';
@@ -765,6 +732,10 @@ async function loadMensagens(beforeId = null) {
             }
             // Reset cache on first page load
             cacheEntry.messages = [];
+        }
+
+        if (msgs.length > 0 && container.querySelector('.empty-state')) {
+            container.innerHTML = '';
         }
 
         if (msgs.length > 0) {
@@ -779,55 +750,21 @@ async function loadMensagens(beforeId = null) {
                 const bubble = renderSingleMessage(msg, false, true); // true = return element only
                 if (bubble) fragment.appendChild(bubble);
                 if (!existingIds.has(msg.id)) {
-                    if (beforeId) {
-                        cacheEntry.messages.unshift(msg);
-                    } else {
-                        cacheEntry.messages.push(msg);
-                    }
+                    cacheEntry.messages.push(msg);
                 }
-                if (!beforeId) lastMsgId = msg.id;
+                lastMsgId = msg.id;
             });
 
-            if (!beforeId) {
-                cacheEntry.lastMsgId = lastMsgId;
-            }
+            cacheEntry.lastMsgId = lastMsgId;
             cacheEntry.lastFetchedAt = Date.now();
             messageCache[convId] = cacheEntry;
 
-            if (beforeId) {
-                const oldHeight = container.scrollHeight;
-                container.prepend(fragment);
-                const newHeight = container.scrollHeight;
-                container.scrollTop = (newHeight - oldHeight); // Keep scroll position relative to content
-            } else {
-                container.appendChild(fragment);
-                scrollToBottom(!lastMsgId); // Force if first load
-            }
-        } else if (!lastMsgId && !beforeId) {
-            scrollToBottom(true);
+            container.appendChild(fragment);
+            container.scrollTop = container.scrollHeight;
+            trimMessageDom(container);
         }
     } catch (err) {
         console.error('Messages error:', err);
-    }
-}
-
-let loadingOlder = false;
-async function loadOlderMessages() {
-    if (loadingOlder || !conversaAtual) return;
-    
-    // Find oldest message in DOM or cache
-    const container = document.getElementById('chatMessages');
-    const oldestBubble = container.querySelector('.msg-bubble');
-    if (!oldestBubble) return;
-    
-    const oldestId = parseInt(oldestBubble.dataset.msgId);
-    if (!oldestId) return;
-
-    loadingOlder = true;
-    try {
-        await loadMensagens(oldestId);
-    } finally {
-        loadingOlder = false;
     }
 }
 
@@ -919,25 +856,6 @@ async function handleChatFileUpload(file) {
         return;
     }
 
-    // WhatsApp Sticker simple import detection
-    const isPotentialSticker = ext === 'webp' || (['jpg','jpeg','png'].includes(ext) && file.size < 500000);
-    if (isPotentialSticker) {
-        if (confirm(`Deseja importar "${file.name}" como uma FIGURINHA?\n\n(A figurinha será salva na sua coleção e enviada sem balão de texto)`)) {
-            const form = new FormData();
-            form.append('sticker', file);
-            showToast('Importando figurinha...', 'info');
-            try {
-                const res = await fetch('/api/stickers/import', { method:'POST', credentials:'same-origin', body:form });
-                const data = await res.json();
-                if (res.ok) {
-                    showToast('Figurinha importada e pronta! 🌟', 'success');
-                    enviarSticker(data.url);
-                    return; // Stop standard upload
-                }
-            } catch(err) { console.error('Auto-import failed', err); }
-        }
-    }
-
     // Temporary optimistic preview item
     const tempUrl = URL.createObjectURL(file);
     pendingMedia.push({ url: tempUrl, name: file.name, isVideo, uploading: true });
@@ -1002,7 +920,6 @@ function renderMediaPreview() {
 }
 
 async function enviarMensagem() {
-    closeAllPanels();
     if (!conversaAtual) return;
     const input = document.getElementById('chatInput');
     const conteudo = input.value.trim();
@@ -1093,12 +1010,8 @@ async function enviarMensagem() {
                 const conteudoEscaped = (msgData.conteudo || '').replace(/'/g, "\\'").replace(/\n/g, " ");
 
                 actions.innerHTML = `
-                    <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${res.id}, '${currentUserEscaped}', '${conteudoEscaped}')" title="Responder">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-reply"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
-                    </button>
-                    <button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${res.id})" title="Apagar mensagem">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-                    </button>
+                    <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${res.id}, '${currentUserEscaped}', '${conteudoEscaped}')" title="Responder">↩️</button>
+                    <button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${res.id})" title="Apagar mensagem">🗑️</button>
                 `;
             }
             
@@ -1176,6 +1089,8 @@ function renderEmojiPicker() {
         `;
     }).join('');
 }
+window.renderEmojiPicker = renderEmojiPicker;
+window.selectEmoji = selectEmoji;
 
 function selectEmoji(emojiChar) {
     const input = document.getElementById('chatInput');
@@ -1191,87 +1106,6 @@ function selectEmoji(emojiChar) {
     input.selectionStart = cursorPos + emojiChar.length;
     input.selectionEnd = cursorPos + emojiChar.length;
 }
-
-// ══════════════════════════════════════════════
-//  Sticker Picker Integration
-// ══════════════════════════════════════════════
-document.getElementById('btnStickerChat')?.addEventListener('click', () => {
-    const panel = document.getElementById('stickerPanel');
-    const gidPanel = document.getElementById('gifPanel');
-    const emoPanel = document.getElementById('emojiPanel');
-    
-    if (!gidPanel.classList.contains('hidden')) gidPanel.classList.add('hidden');
-    if (!emoPanel.classList.contains('hidden')) emoPanel.classList.add('hidden');
-    
-    panel.classList.toggle('hidden');
-    if (!panel.classList.contains('hidden')) {
-        renderStickerPicker();
-    }
-});
-
-async function renderStickerPicker() {
-    const container = document.getElementById('stickerResults');
-    if (!container) return;
-    
-    try {
-        const stickers = await api('/api/stickers');
-        if (!stickers || stickers.length === 0) {
-            container.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 1rem;">Nenhuma figurinha importada.</p>';
-            return;
-        }
-        
-        container.innerHTML = stickers.map(s => `
-            <div class="sticker-item" onclick="enviarSticker('${s.url}')">
-                <img src="${s.url}" loading="lazy" alt="sticker">
-            </div>
-        `).join('');
-    } catch (err) {
-        container.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--danger); font-size: 0.8rem;">Erro ao carregar figurinhas.</p>';
-    }
-}
-
-async function enviarSticker(url) {
-    if (!conversaAtual) return;
-    closeAllPanels();
-    
-    // Stickers bypass pendingMedia logic for instant send
-    try {
-        await api(`/api/conversas/${conversaAtual.id}/mensagens`, {
-            method: 'POST',
-            body: { conteudo: '', media_url: url }
-        });
-        // SocketIO will handle the real-time update
-    } catch (err) {
-        showToast('Erro ao enviar figurinha', 'error');
-    }
-}
-
-window.importarStickerDesdeArquivo = async function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    const form = new FormData();
-    form.append('sticker', file);
-    
-    showToast('Importando figurinha...', 'info');
-    try {
-        const res = await fetch('/api/stickers/import', {
-            method: 'POST',
-            credentials: 'same-origin',
-            body: form
-        });
-        const data = await res.json();
-        if (res.ok) {
-            showToast('Figurinha importada! 🌟', 'success');
-            renderStickerPicker();
-        } else {
-            showToast(data.erro || 'Erro na importação', 'error');
-        }
-    } catch (err) {
-        showToast('Erro ao importar', 'error');
-    }
-    input.value = '';
-};
 
 document.getElementById('gifSearchInput').addEventListener('input', (e) => {
     const q = e.target.value.trim();
@@ -1302,13 +1136,69 @@ function renderTenorResults(gifs) {
         `;
     }).join('');
 }
+window.selectGif = selectGif;
 
 function selectGif(url) {
-    closeAllPanels();
-    // GIFs bypass standard file upload and go into pendingMedia array
-    pendingMedia = [{ url: url, name: 'Tenor GIF', isVideo: false, uploading: false }];
+    document.getElementById('gifPanel').classList.add('hidden');
+    pendingMedia.push({ url, name: 'GIF', isVideo: false, uploading: false });
     enviarMensagem();
 }
+
+// ══════════════════════════════════════════════
+//  Stickers Integration
+// ══════════════════════════════════════════════
+document.getElementById('btnStickerChat')?.addEventListener('click', () => {
+    const panel = document.getElementById('stickerPanel');
+    const gifPanel = document.getElementById('gifPanel');
+    const emojiPanel = document.getElementById('emojiPanel');
+    
+    if (!gifPanel.classList.contains('hidden')) gifPanel.classList.add('hidden');
+    if (!emojiPanel.classList.contains('hidden')) emojiPanel.classList.add('hidden');
+    
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+        loadStickers();
+    }
+});
+
+async function loadStickers() {
+    const container = document.getElementById('stickerResults');
+    if (!container) return;
+    container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:1rem;color:var(--text-muted)">Carregando...</div>';
+    
+    try {
+        const stickers = await api('/api/stickers');
+        if (stickers.length === 0) {
+            container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:1rem;color:var(--text-muted)">Nenhuma figurinha disponível</div>';
+            return;
+        }
+        
+        container.innerHTML = stickers.map(url => `
+            <div class="sticker-item" onclick="selectSticker('${url}')" style="cursor:pointer;padding:0.25rem;border-radius:var(--radius-sm);transition:all 0.2s">
+                <img src="${url}" style="width:100%;height:auto;display:block" loading="lazy">
+            </div>
+        `).join('');
+    } catch (err) {
+        container.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:1rem;color:var(--danger)">Erro ao carregar figurinhas</div>';
+    }
+}
+
+function selectSticker(url) {
+    document.getElementById('stickerPanel').classList.add('hidden');
+    pendingMedia.push({ url, name: 'Sticker', isVideo: false, uploading: false });
+    enviarMensagem();
+}
+window.selectSticker = selectSticker;
+
+document.getElementById('btnConfigWallpaper')?.addEventListener('click', () => {
+    const btnNav = document.getElementById('btnEditProfileNav');
+    if (btnNav) {
+        btnNav.click();
+    } else {
+        // Fallback for direct trigger
+        document.getElementById('btnEditProfile')?.click();
+    }
+});
 
 // ══════════════════════════════════════════════
 //  Unified Sync Polling
@@ -1372,7 +1262,7 @@ function stopChatPolling() { stopSyncPolling(); }
 
 
 // ── New Direct Chat ──
-async function abrirNovoChatDireto() {
+document.getElementById('btnNovoChatDireto')?.addEventListener('click', async () => {
     try {
         const usuarios = await api('/api/usuarios');
         const others = usuarios.filter(u => u.id !== currentUser.id);
@@ -1389,8 +1279,7 @@ async function abrirNovoChatDireto() {
             </div>`).join('');
         openModal('Nova Conversa', `<p style="margin-bottom:1rem;color:var(--text-secondary)">Selecione um usuário:</p><div style="display:flex;flex-direction:column;gap:0.5rem">${userList}</div>`, '');
     } catch(err) { showToast('Erro ao carregar usuários','error'); }
-}
-document.getElementById('btnNovoChatDireto').addEventListener('click', abrirNovoChatDireto);
+});
 
 async function criarChatDireto(userId) {
     try {
@@ -1400,33 +1289,24 @@ async function criarChatDireto(userId) {
 }
 
 // ── New Group ──
-async function abrirCriarGrupo() {
+document.getElementById('btnNovoGrupo')?.addEventListener('click', async () => {
     try {
         const usuarios = await api('/api/usuarios');
         const others = usuarios.filter(u => u.id !== currentUser.id);
         const checkboxes = others.map(u => `
-            <label class="member-selection-item">
-                <input type="checkbox" value="${u.id}" class="grupo-membro-check hidden-checkbox">
-                <div class="member-selection-content">
-                    <div class="chat-item-avatar" style="width:36px;height:36px">
-                        ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
-                    </div>
-                    <div class="member-info">
-                        <span class="member-name">${u.nome}</span>
-                        <span class="member-username">@${u.username}</span>
-                    </div>
-                    <div class="selection-indicator">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check"><path d="M20 6 9 17l-5-5"/></svg>
-                    </div>
+            <label class="user-checkbox" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem;cursor:pointer;border-radius:var(--radius-sm)">
+                <input type="checkbox" value="${u.id}" class="grupo-membro-check">
+                <div class="chat-item-avatar" style="width:32px;height:32px">
+                    ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
                 </div>
+                <span>${u.nome}</span>
             </label>`).join('');
         openModal('Novo Grupo', `
             <div class="form-group"><label class="form-label">Nome do Grupo</label><input type="text" class="input" id="grupoNome" placeholder="Ex: Grupo de Estudos"></div>
             <div class="form-group"><label class="form-label">Membros</label><div style="max-height:200px;overflow-y:auto">${checkboxes||'<p class="empty-state">Nenhum outro usuário</p>'}</div></div>
         `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="criarGrupo()">Criar Grupo</button>`);
     } catch(err) { showToast('Erro ao carregar usuários','error'); }
-}
-document.getElementById('btnNovoGrupo').addEventListener('click', abrirCriarGrupo);
+});
 
 async function criarGrupo() {
     const nome = document.getElementById('grupoNome').value.trim();
@@ -1434,12 +1314,12 @@ async function criarGrupo() {
     const membros = Array.from(document.querySelectorAll('.grupo-membro-check:checked')).map(cb => parseInt(cb.value));
     try {
         const res = await api('/api/conversas/grupo', { method:'POST', body:{nome,membros}});
-        closeModal(); showToast('Grupo criado!', 'success'); await loadConversas(); abrirConversa(res.id);
+        closeModal(); showToast('Grupo criado! 👥','success'); await loadConversas(); abrirConversa(res.id);
     } catch(err) { showToast('Erro ao criar grupo','error'); }
 }
 
 // ── Edit Group ──
-document.getElementById('btnEditGrupo').addEventListener('click', async () => {
+document.getElementById('btnEditGrupo')?.addEventListener('click', async () => {
     if (!conversaAtual || conversaAtual.tipo !== 'grupo') return;
 
     let availableUsers = [];
@@ -1454,15 +1334,13 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
     const subsList = subtopicos.map(s => `
         <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.6rem;background:var(--bg-input);border-radius:var(--radius-sm);border-left:3px solid ${s.cor}">
             <span style="flex:1">${s.nome}</span>
-            <button class="btn btn-sm btn-ghost" onclick="editarSubtopico(${s.id})" style="padding:0.2rem 0.4rem">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pencil"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
-            </button>
+            <button class="btn btn-sm btn-ghost" onclick="editarSubtopico(${s.id})" style="padding:0.2rem 0.4rem">✏️</button>
         </div>`).join('');
 
     openModal('Editar Grupo', `
         <div style="text-align:center;margin-bottom:1.5rem">
             <div class="profile-avatar-lg" id="grupoAvatarEdit" style="margin: 0 auto 1rem;">
-                ${conversaAtual.foto ? `<img src="${conversaAtual.foto}" alt="">` : `<span><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-users"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>`}
+                ${conversaAtual.foto ? `<img src="${conversaAtual.foto}" alt="">` : `<span>👥</span>`}
             </div>
             <div style="display: flex; gap: 0.5rem; justify-content: center;">
                 <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir arquivo">
@@ -1490,12 +1368,11 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <label class="btn btn-sm btn-secondary" style="cursor:pointer; flex: 1; justify-content: center;">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image" style="margin-right: 4px;"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                        Imagem/GIF
+                        🖼️ Imagem/GIF
                         <input type="file" id="grupoWallInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
                     </label>
                     <button class="btn btn-sm btn-secondary" id="btnGrupoWallGif" style="flex: 1; justify-content: center;">🎬 Buscar GIF</button>
-                    ${conversaAtual.wallpaper ? `<button class="btn btn-sm btn-ghost" onclick="removerGrupoWall()" style="color:var(--danger)"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg></button>` : ''}
+                    ${conversaAtual.wallpaper ? `<button class="btn btn-sm btn-ghost" onclick="removerGrupoWall()" style="color:var(--danger)">🗑️</button>` : ''}
                 </div>
             </div>
             
@@ -1511,31 +1388,15 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
         </div>
 
         ${availableUsers.length > 0 ? `
-        <div class="form-group member-addition-modern">
+        <div class="form-group" style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.05);">
             <label class="form-label">Adicionar Novo Membro</label>
-            <div class="member-search-container">
-                <input type="text" class="input search-input" id="newMemberSearch" placeholder="Pesquisar por nome ou @usuário..." oninput="window._filtrarMembrosAdicao(this.value)">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search search-icon"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <div style="display:flex; gap:0.5rem">
+                <select class="input" id="newMemberSelect" style="flex:1">
+                    <option value="">Selecione um usuário...</option>
+                    ${availableUsers.map(u => `<option value="${u.id}">${u.nome} (@${u.username})</option>`).join('')}
+                </select>
+                <button class="btn btn-primary" onclick="window._adicionarMembroGrupo()">Adicionar</button>
             </div>
-            <div class="add-members-list" id="addMembersList">
-                ${availableUsers.map(u => `
-                <label class="member-selection-item add-item" data-search="${u.nome.toLowerCase()} @${u.username.toLowerCase()}">
-                    <input type="checkbox" value="${u.id}" class="add-membro-check hidden-checkbox">
-                    <div class="member-selection-content small">
-                        <div class="chat-item-avatar" style="width:32px;height:32px">
-                            ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
-                        </div>
-                        <div class="member-info">
-                            <span class="member-name">${u.nome}</span>
-                            <span class="member-username">@${u.username}</span>
-                        </div>
-                        <div class="selection-indicator">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check"><path d="M20 6 9 17l-5-5"/></svg>
-                        </div>
-                    </div>
-                </label>`).join('')}
-            </div>
-            <button class="btn btn-primary w-full mt-2" onclick="window._adicionarMembroGrupo()">Adicionar Selecionados</button>
         </div>
         ` : ''}
 
@@ -1545,10 +1406,7 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
         </div>
         
         <div style="margin-top:2rem; padding-top:1rem; border-top:1px solid rgba(255,255,255,0.1); text-align:center;">
-            <button class="btn btn-ghost" style="color:var(--danger)" onclick="excluirGrupoInteiro()">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2" style="margin-right: 6px;"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-                Excluir Grupo
-            </button>
+            <button class="btn btn-ghost" style="color:var(--danger)" onclick="excluirGrupoInteiro()">🗑️ Excluir Grupo</button>
         </div>
     `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="salvarGrupo()">Salvar</button>`);
 
@@ -1635,39 +1493,25 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
 
 window._adicionarMembroGrupo = async function() {
     if (!conversaAtual) return;
-    const checked = Array.from(document.querySelectorAll('.add-membro-check:checked'));
-    if (checked.length === 0) {
-        showToast('Selecione pelo menos um usuário', 'error');
+    const select = document.getElementById('newMemberSelect');
+    const userId = select.value;
+    if (!userId) {
+        showToast('Selecione um usuário', 'error');
         return;
     }
-    
     try {
-        for (const cb of checked) {
-            await api(`/api/conversas/${conversaAtual.id}/membros`, {
-                method: 'POST',
-                body: { usuario_id: parseInt(cb.value) }
-            });
-        }
-        showToast(`${checked.length} membro(s) adicionado(s)!`, 'success');
+        await api(`/api/conversas/${conversaAtual.id}/membros`, {
+            method: 'POST',
+            body: { usuario_id: userId }
+        });
+        showToast('Membro adicionado!', 'success');
         closeModal();
         await loadConversas();
+        // Re-open chat to refresh sidebar UI
         abrirConversa(conversaAtual.id);
     } catch(err) {
-        showToast('Erro ao adicionar membro(s)', 'error');
+        showToast('Erro ao adicionar membro', 'error');
     }
-};
-
-window._filtrarMembrosAdicao = function(query) {
-    const q = query.toLowerCase();
-    const items = document.querySelectorAll('.member-selection-item.add-item');
-    items.forEach(item => {
-        const text = item.getAttribute('data-search');
-        if (text.includes(q)) {
-            item.style.display = 'block';
-        } else {
-            item.style.display = 'none';
-        }
-    });
 };
 
 function renderGrupoWallGifs(gifs) {
@@ -1703,18 +1547,14 @@ function renderGrupoWallGifs(gifs) {
 function setGrupoWallpaper(url) {
     if (!conversaAtual) return;
     conversaAtual.wallpaper = url;
-    conversaAtual.display_wallpaper = url;
-    applyActiveChatWallpaper(url);
     document.getElementById('grupoWallPreview').innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover;">`;
     renderConversasList();
-    showToast('Plano de fundo atualizado!', 'success');
+    showToast('Plano de fundo atualizado! 🏞️','success');
 }
 
 function removerGrupoWall() {
     if (!conversaAtual) return;
     conversaAtual.wallpaper = '';
-    conversaAtual.display_wallpaper = '';
-    applyActiveChatWallpaper(null);
     document.getElementById('grupoWallPreview').innerHTML = '<div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; opacity:0.3; font-size:0.8rem;">Sem fundo</div>';
     renderConversasList();
     showToast('Fundo removido','info');
@@ -1758,7 +1598,7 @@ function setGrupoAvatar(url) {
     document.getElementById('grupoAvatarEdit').innerHTML = `<img src="${url}" alt="">`;
     document.getElementById('chatAvatar').innerHTML = `<img src="${url}" alt="">`;
     renderConversasList();
-    showToast('Foto do grupo atualizada!', 'success');
+    showToast('Foto do grupo atualizada! 🎉','success');
 }
 
 async function excluirChat(id, nome) {
@@ -1819,7 +1659,7 @@ async function salvarGrupo() {
 }
 
 // ── Mobile Back Button ──
-document.getElementById('btnBackChat').addEventListener('click', () => {
+document.getElementById('btnBackChat')?.addEventListener('click', () => {
     conversaAtual = null;
     window.conversaAtual = null;
     document.querySelector('.chat-placeholder').classList.remove('hidden');
@@ -1855,7 +1695,7 @@ async function abrirPerfil(userId) {
                 <div class="bio-card-wallpaper">
                     ${user.wallpaper ? `<img src="${user.wallpaper}" alt="wallpaper">` : `<div style="width:100%;height:100%;background:linear-gradient(45deg, var(--primary), var(--secondary));opacity:0.6"></div>`}
                     <div class="bio-card-avatar">
-                        ${user.foto ? `<img src="${user.foto}" alt="${user.nome}">` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`}
+                        ${user.foto ? `<img src="${user.foto}" alt="${user.nome}">` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`}
                     </div>
                 </div>
                 <div class="bio-card-name">${user.nome}</div>
@@ -1928,7 +1768,7 @@ async function fixarMensagem(msgId) {
             method: 'POST',
             body: { mensagem_id: msgId }
         });
-        showToast('Mensagem fixada!', 'success');
+        showToast('Mensagem fixada! 📌', 'success');
         // O sync cuidará de atualizar a UI para todos
     } catch (err) {
         showToast('Erro ao fixar mensagem', 'error');
@@ -2025,7 +1865,73 @@ function incrementUnread(convId) {
     renderConversasList();
 }
 
+// --- Lixeira ---
+const btnLixeira = document.getElementById('btnLixeira');
+if (btnLixeira) {
+    btnLixeira.addEventListener('click', () => {
+        if (!conversaAtual) return;
+        openModal('Mensagens Excluídas', '<div id="lixeiraList" class="lixeira-list"></div>', '');
+        loadLixeira();
+    });
+}
 
+async function loadLixeira() {
+    const list = document.getElementById('lixeiraList');
+    list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Carregando...</p>';
+
+    try {
+        const res = await fetch(`/api/conversas/${conversaAtual.id}/lixeira`);
+        const msgs = await res.json();
+
+        if (msgs.length === 0) {
+            list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Nenhuma mensagem excluída para restaurar.</p>';
+            return;
+        }
+
+        list.innerHTML = '';
+        msgs.forEach(msg => {
+            const item = document.createElement('div');
+            item.className = 'lixeira-item';
+            
+            const time = new Date(msg.excluido_em).toLocaleString('pt-BR');
+            const content = msg.conteudo || (msg.media_url ? '[Mídia]' : '[Sem conteúdo]');
+
+            item.innerHTML = `
+                <div class="lixeira-content">
+                    <div class="lixeira-text" title="${content}">${content}</div>
+                    <div class="lixeira-meta">Excluída em: ${time}</div>
+                </div>
+                <button class="btn-restaurar" onclick="restaurarMensagem(${msg.id})">Restaurar</button>
+            `;
+            list.appendChild(item);
+        });
+    } catch (err) {
+        console.error('Erro ao carregar lixeira:', err);
+        list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--danger-color);">Erro ao carregar lixeira.</p>';
+    }
+}
+
+async function restaurarMensagem(msgId) {
+    if (!confirm('Deseja restaurar esta mensagem?')) return;
+
+    try {
+        const res = await fetch(`/api/conversas/mensagens/${msgId}/restaurar`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+            alert('Mensagem restaurada com sucesso!');
+            loadLixeira();
+            // A mensagem aparecerá no chat via SocketIO (new_message)
+        } else {
+            alert('Erro: ' + (data.erro || 'Erro desconhecido'));
+        }
+    } catch (err) {
+        alert('Erro ao restaurar mensagem');
+        console.error(err);
+    }
+}
 
 // Clear unread when opening a conversation
 const _originalAbrirConversa = window.abrirConversa || (typeof abrirConversa !== 'undefined' ? abrirConversa : null);
@@ -2110,296 +2016,4 @@ function sendBrowserNotification(title, body, convName, convId) {
     }
 }
 
-// ══════════════════════════════════════════════
-//  Wallpaper Placeholder Persistence
-// ══════════════════════════════════════════════
-//  Wallpaper Placeholder Persistence
-// ══════════════════════════════════════════════
-const WALLPAPER_STORAGE_KEY = 'chat_placeholder_wallpaper';
-window.AVAILABLE_WALLPAPERS = [];
 
-window.initPlaceholderWallpaper = async function() {
-    try {
-        // Refresh available list from server
-        await window.fetchWallpapers();
-        
-        // Prioritize server-saved wallpaper if available
-        const serverWall = (typeof currentUser !== 'undefined' && currentUser && currentUser.wallpaper_placeholder) 
-                        ? currentUser.wallpaper_placeholder 
-                        : null;
-                        
-        const saved = serverWall || localStorage.getItem(WALLPAPER_STORAGE_KEY);
-        if (saved) {
-            setPlaceholderWallpaper(saved, false);
-            // Also apply to main area if no chat is open or as a fallback
-            if (!conversaAtual) {
-                applyActiveChatWallpaper(null);
-            }
-        }
-    } catch (e) {
-        console.error('[Wallpaper] Init failed:', e);
-    }
-};
-
-window.fetchWallpapers = async function() {
-    try {
-        const walls = await api('/api/wallpapers');
-        window.AVAILABLE_WALLPAPERS = Array.isArray(walls) ? walls : [];
-    } catch (e) {
-        console.error('[Wallpaper] Failed to fetch list:', e);
-        if (!window.AVAILABLE_WALLPAPERS || window.AVAILABLE_WALLPAPERS.length === 0) {
-            window.AVAILABLE_WALLPAPERS = [
-                '/static/images/logo1.gif',
-                '/static/images/logo2.gif',
-                '/static/images/logo4.jpg',
-                '/static/images/logo9.gif'
-            ];
-        }
-    }
-};
-
-window.syncWallpaperToServer = async function(url) {
-    if (typeof currentUser === 'undefined' || !currentUser) return;
-    try {
-        const updatedUser = await api('/api/perfil', {
-            method: 'PUT',
-            body: { wallpaper_placeholder: url }
-        });
-        if (updatedUser && updatedUser.wallpaper_placeholder !== undefined) {
-             currentUser.wallpaper_placeholder = updatedUser.wallpaper_placeholder;
-        }
-    } catch (e) {
-        console.error('[Wallpaper] Sync failed:', e);
-    }
-};
-
-window.applyActiveChatWallpaper = function(url) {
-    const main = document.getElementById('chatMain');
-    if (!main) return;
-    
-    // If no specific conversation wallpaper, fallback to global placeholder wallpaper
-    const finalUrl = url || (typeof currentUser !== 'undefined' && currentUser ? currentUser.wallpaper_placeholder : null) || localStorage.getItem(WALLPAPER_STORAGE_KEY);
-    
-    if (finalUrl) {
-        main.style.setProperty('--active-chat-wallpaper', `url('${finalUrl}')`);
-    } else {
-        main.style.setProperty('--active-chat-wallpaper', 'none');
-    }
-};
-
-window.setPlaceholderWallpaper = function(url, save = true) {
-    const placeholder = document.querySelector('.chat-placeholder');
-    if (!placeholder) {
-        // If placeholder is not found, maybe it's not the right screen yet
-        // but we should still save it to localStorage/server
-        if (save) {
-            localStorage.setItem(WALLPAPER_STORAGE_KEY, url);
-            syncWallpaperToServer(url);
-        }
-        return;
-    }
-    
-    if (url) {
-        placeholder.style.backgroundImage = `url('${url}')`;
-        if (save) {
-            localStorage.setItem(WALLPAPER_STORAGE_KEY, url);
-            syncWallpaperToServer(url);
-            showToast('Wallpaper atualizado! 🎨', 'success');
-            
-            // If we are in an active chat without a specific wallpaper, update it too
-            if (conversaAtual && !conversaAtual.wallpaper) {
-                applyActiveChatWallpaper(url);
-            }
-        }
-    } else {
-        placeholder.style.backgroundImage = 'none';
-        if (save) {
-            localStorage.removeItem(WALLPAPER_STORAGE_KEY);
-            syncWallpaperToServer('');
-            showToast('Fundo removido', 'info');
-        }
-    }
-};
-
-window.abrirConfigWallpaper = async function() {
-    showToast('Carregando galeria...', 'info');
-    // Refresh list before opening
-    await window.fetchWallpapers();
-    
-    const current = (typeof currentUser !== 'undefined' && currentUser && currentUser.wallpaper_placeholder) 
-                   || localStorage.getItem(WALLPAPER_STORAGE_KEY);
-    
-    const gridHtml = `
-        <div class="wallpaper-grid">
-            <div class="wallpaper-item none-item ${!current ? 'active' : ''}" onclick="setPlaceholderWallpaper(''); closeModal();">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ban"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>
-                <span>Nenhum</span>
-            </div>
-            
-            <div class="wallpaper-item upload-item" onclick="document.getElementById('customWallInput').click()">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload-cloud"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12V22"/><path d="m16 16-4-4-4 4"/></svg>
-                <span>Subir seu Próprio</span>
-                <input type="file" id="customWallInput" accept="image/*" style="display:none" onchange="window.handleCustomWallpaperUpload(this)">
-            </div>
-
-            ${window.AVAILABLE_WALLPAPERS.map(url => `
-                <div class="wallpaper-item ${current === url ? 'active' : ''}" 
-                     style="background-image: url('${url}')" 
-                     onclick="setPlaceholderWallpaper('${url}'); closeModal();">
-                </div>
-            `).join('')}
-        </div>
-    `;
-    
-    openModal('Escolher Wallpaper', gridHtml, `
-        <button class="btn btn-ghost" onclick="closeModal()" style="width:100%">Fechar</button>
-    `);
-};
-
-window.handleCustomWallpaperUpload = async function(input) {
-    const file = input.files[0];
-    if (!file) return;
-    
-    showToast('Enviando wallpaper...', 'info');
-    
-    try {
-        const form = new FormData();
-        form.append('foto', file);
-        form.append('tipo', 'wallpaper_placeholder');
-        
-        const res = await fetch('/api/upload-foto', {
-            method: 'POST',
-            credentials: 'same-origin',
-            body: form
-        });
-        
-        const data = await res.json();
-        if (res.ok) {
-            // Success! The background is set and synced
-            setPlaceholderWallpaper(data.foto);
-            closeModal();
-            // Refresh list for others
-            await fetchWallpapers();
-        } else {
-            showToast(data.erro || 'Erro no upload', 'error');
-        }
-    } catch (e) {
-        showToast('Falha na conexão', 'error');
-    }
-};
-
-// Auto-init and listener
-document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-        const btn = document.getElementById('btnConfigWallpaper');
-        if (btn) btn.addEventListener('click', abrirConfigWallpaper);
-        
-        const chatMessages = document.getElementById('chatMessages');
-        if (chatMessages) {
-            chatMessages.addEventListener('scroll', () => {
-                if (chatMessages.scrollTop === 0) {
-                    loadOlderMessages();
-                }
-            });
-        }
-        
-        initPlaceholderWallpaper();
-    }, 100);
-});
-
-
-// ══════════════════════════════════════════════
-//  Internal Image Lightbox Logic
-// ══════════════════════════════════════════════
-let lightboxZoom = 1;
-let lightboxPan = { x: 0, y: 0 };
-let isDraggingLightbox = false;
-let startDragPos = { x: 0, y: 0 };
-
-window.abrirLightbox = function(url) {
-    const overlay = document.getElementById('imageLightbox');
-    const img = document.getElementById('lightboxImg');
-    
-    img.src = url;
-    lightboxZoom = 1;
-    lightboxPan = { x: 0, y: 0 };
-    updateLightboxTransform();
-    
-    overlay.classList.remove('hidden');
-    document.body.style.overflow = 'hidden'; // Stop scroll
-};
-
-window.fecharLightbox = function() {
-    const overlay = document.getElementById('imageLightbox');
-    overlay.classList.add('hidden');
-    document.body.style.overflow = '';
-};
-
-function updateLightboxTransform() {
-    const img = document.getElementById('lightboxImg');
-    img.style.transform = `translate(${lightboxPan.x}px, ${lightboxPan.y}px) scale(${lightboxZoom})`;
-}
-
-// Event Listeners for Lightbox
-document.addEventListener('DOMContentLoaded', () => {
-    const overlay = document.getElementById('imageLightbox');
-    const closeBtn = document.getElementById('btnCloseLightbox');
-    const img = document.getElementById('lightboxImg');
-    const content = document.getElementById('lightboxContent');
-    
-    if (!overlay) return;
-
-    closeBtn.addEventListener('click', fecharLightbox);
-    overlay.addEventListener('click', (e) => {
-        if (e.target === overlay || e.target === content) fecharLightbox();
-    });
-
-    // Zoom Controls
-    document.getElementById('btnZoomIn').onclick = () => { lightboxZoom += 0.2; updateLightboxTransform(); };
-    document.getElementById('btnZoomOut').onclick = () => { if(lightboxZoom > 0.4) lightboxZoom -= 0.2; updateLightboxTransform(); };
-    document.getElementById('btnResetZoom').onclick = () => { lightboxZoom = 1; lightboxPan = {x:0, y:0}; updateLightboxTransform(); };
-
-    // Mouse Wheel Zoom
-    overlay.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        const newZoom = lightboxZoom + delta;
-        if (newZoom >= 0.2 && newZoom <= 5) {
-            lightboxZoom = newZoom;
-            updateLightboxTransform();
-        }
-    }, { passive: false });
-
-    // Drag to Pan
-    content.onmousedown = (e) => {
-        isDraggingLightbox = true;
-        startDragPos = { x: e.clientX - lightboxPan.x, y: e.clientY - lightboxPan.y };
-        e.preventDefault();
-    };
-
-    window.addEventListener('mousemove', (e) => {
-        if (!isDraggingLightbox || overlay.classList.contains('hidden')) return;
-        lightboxPan.x = e.clientX - startDragPos.x;
-        lightboxPan.y = e.clientY - startDragPos.y;
-        updateLightboxTransform();
-    });
-
-    window.addEventListener('mouseup', () => {
-        isDraggingLightbox = false;
-    });
-
-    // ESC to close
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
-            fecharLightbox();
-        }
-    });
-});
-
-function closeAllPanels() {
-    const panels = ['gifPanel', 'emojiPanel', 'stickerPanel'];
-    panels.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.classList.add('hidden');
-    });
-}

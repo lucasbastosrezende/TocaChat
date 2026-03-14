@@ -95,13 +95,18 @@ function updateProfileUI(user) {
     // outros elementos globais se necessário futuramente.
 }
 
-// ── SPA Router (Simplified for Chat Only) ──
+// ── SPA Router ──
 function navigateTo(page) {
-    if (page !== 'chat') return; 
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    const target = document.getElementById(`page-chat`);
-    if (target) target.classList.add('active');
-    window.dispatchEvent(new CustomEvent('pageChange', { detail: { page: 'chat' } }));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    
+    const target = document.getElementById(`page-${page}`);
+    if (target) {
+        target.classList.add('active');
+        const navBtn = document.getElementById(`nav-${page}`);
+        if (navBtn) navBtn.classList.add('active');
+        window.dispatchEvent(new CustomEvent('pageChange', { detail: { page } }));
+    }
 }
 
 // ── Logout ──

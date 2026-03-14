@@ -1,9 +1,0 @@
-tunnel: <tunnel-id>
-credentials-file: C:\Users\03513991274\.cloudflared\<tunnel-id>.json
-
-ingress:
-  - hostname: toca.seudominio.com
-    service: http://localhost:3000
-  - hostname: peer.seudominio.com
-    service: http://localhost:9000
-  - service: http_status:404

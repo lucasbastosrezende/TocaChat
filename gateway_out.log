@@ -1,0 +1,6 @@
+[SSL] Certificados carregados com sucesso.
+--- Gateway TocaChat (HTTPS + WebSocket Enabled) ---
+Gateway unificado rodando em https://tocachat.duckdns.org:8080 (SECURE)
+- Redirecionando /myapp para PeerJS (9000) com WSS
+- Redirecionando /socket.io para Flask (3000) com WSS
+- Redirecionando todo o resto para Flask (3000)

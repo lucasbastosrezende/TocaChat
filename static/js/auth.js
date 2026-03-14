@@ -362,3 +362,4 @@ async function salvarPerfil() {
         showToast('Erro ao salvar perfil', 'error');
     }
 }
+window.salvarPerfil = salvarPerfil;

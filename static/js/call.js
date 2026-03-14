@@ -33,9 +33,16 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let reconnectTimer = null;
 let peerHadOpenOnce = false;
-let peerCurrentPort = 9000;
 let isPeerOpening = false;
 let callRetryInterval = null;
+
+// Determine default peer port based on environment
+function getDefaultPeerPort() {
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (isLocal) return 9000; // Directly to PeerServer
+    return window.location.port || (window.location.protocol === 'https:' ? 443 : 80);
+}
+let peerCurrentPort = getDefaultPeerPort();
 
 // ── Ringtone ─────────────────────────────────────────────────────────────────
 let ringtoneCtx = null;
@@ -344,9 +351,11 @@ function _createPeer() {
         isPeerOpening = false;
         console.error('[PeerJS] erro:', err);
         if (err.type === 'network' || err.type === 'server-error') {
-            if (!peerHadOpenOnce && peerCurrentPort === 9000) {
-                console.warn('[PeerJS] Fallback para 443');
-                peerCurrentPort = 443;
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            if (!peerHadOpenOnce && isLocal && peerCurrentPort === 9000) {
+                // If local fails on 9000, maybe it's through the gateway?
+                console.warn('[PeerJS] Fallback para 8080 (gateway local)');
+                peerCurrentPort = 8080;
                 setTimeout(initPeer, 1000);
             } else {
                 handlePeerReconnect();
@@ -959,7 +968,7 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
 
     const photoHtml = targetPhoto
         ? `<img src="${targetPhoto}" alt="${targetName}" class="incoming-call-avatar-img">`
-        : `<video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`;
+        : `<video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`;
 
     overlay.innerHTML = `
         <div class="incoming-call-backdrop"></div>
@@ -1022,7 +1031,7 @@ function showIncomingCallAlert(callConv, callerMember, dados) {
 
     const callerPhoto = callerMember.foto
         ? `<img src="${callerMember.foto}" alt="${callerMember.nome}" class="incoming-call-avatar-img">`
-        : `<video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"><source src="/static/images/Criação_de_Animação_Abstrata_Anime.mp4" type="video/mp4"></video>`;
+        : `<video autoplay loop muted playsinline class="default-avatar-vid" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`;
 
     const subtitle = callConv.tipo === 'grupo' ? `em ${callConv.nome || 'Grupo'}` : 'Chamada direta';
 

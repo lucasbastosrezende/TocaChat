@@ -125,7 +125,6 @@ def init_db():
         ('mensagens', 'media_url', "TEXT DEFAULT ''"),
         ('mensagens', 'reply_to_id', 'INTEGER'),
         ('usuarios', 'wallpaper', "TEXT DEFAULT ''"),
-        ('usuarios', 'wallpaper_placeholder', "TEXT DEFAULT ''"),
         ('conversas', 'wallpaper', "TEXT DEFAULT ''"),
         ('conversas', 'pinned_message_id', 'INTEGER'),
         ('grupo_subtopicos', 'pinned_message_id', 'INTEGER'),
@@ -157,17 +156,6 @@ def init_db():
                 apagado_em TEXT DEFAULT (datetime('now'))
             )
         ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS stickers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            usuario_id INTEGER,
-            url TEXT NOT NULL,
-            categoria TEXT DEFAULT 'importado',
-            criado_em TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
-        )
-    ''')
 
     conn.commit()
     conn.close()
