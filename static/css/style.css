@@ -2028,6 +2028,27 @@ body::before {
     position: relative;
     min-width: 0;
     min-height: 0;
+    z-index: 1;
+}
+
+.chat-main::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: var(--active-chat-wallpaper);
+    background-size: cover;
+    background-position: center;
+    opacity: 0.15;
+    z-index: -1;
+    transition: opacity 0.5s ease;
+}
+
+.chat-main::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 15, 30, 0.4); /* Overlay to improve readability */
+    z-index: -1;
 }
 
 .chat-placeholder {

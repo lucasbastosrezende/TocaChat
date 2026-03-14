@@ -55,3 +55,15 @@
 2026-03-13T23:27:42Z ERR  error="Incoming request ended abruptly: context canceled" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
 2026-03-13T23:27:42Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=polling&t=PpfXhPw&sid=-P39UIJ0prTYeZtYAABy event=0 ip=198.41.192.37 type=http
 2026-03-13T23:27:42Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=websocket&sid=-P39UIJ0prTYeZtYAABy event=0 ip=198.41.192.37 type=ws
+2026-03-14T04:31:12Z ERR  error="Incoming request ended abruptly: context canceled" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:31:12Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=polling&t=PpgdBMf&sid=iIAFzt905ItoKVGQAAAu event=0 ip=198.41.192.37 type=http
+2026-03-14T04:38:37Z ERR  error="Incoming request ended abruptly: context canceled" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:38:37Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=polling&t=Ppgesmt&sid=tMQbh81gwV7BRyJtAACY event=0 ip=198.41.192.37 type=http
+2026-03-14T04:39:11Z ERR  error="stream 44201 canceled by remote with error code 0" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:39:12Z ERR Request failed error="stream 44201 canceled by remote with error code 0" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/static/images/logo3.mp4 event=0 ip=198.41.192.37 type=http
+2026-03-14T04:42:44Z ERR  error="Incoming request ended abruptly: context canceled" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:42:44Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=polling&t=PpgfqkE&sid=-P_17oLuH-KbcvlyAAAE event=0 ip=198.41.192.37 type=http
+2026-03-14T04:42:53Z ERR  error="Incoming request ended abruptly: context canceled" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:42:53Z ERR Request failed error="Incoming request ended abruptly: context canceled" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/socket.io/?EIO=4&transport=polling&t=Ppgfsko&sid=TKrLdrEFzzQryaVxAAAG event=0 ip=198.41.192.37 type=http
+2026-03-14T04:46:33Z ERR  error="stream 45769 canceled by remote with error code 0" connIndex=0 event=1 ingressRule=0 originService=http://localhost:8080
+2026-03-14T04:46:33Z ERR Request failed error="stream 45769 canceled by remote with error code 0" connIndex=0 dest=https://and-avenue-apt-included.trycloudflare.com/static/images/logo3.mp4 event=0 ip=198.41.192.37 type=http

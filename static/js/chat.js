@@ -155,7 +155,7 @@ function renderConversasList() {
         const initial = c.display_nome ? c.display_nome.charAt(0).toUpperCase() : '?';
         const unread = (typeof unreadCounts !== 'undefined' ? unreadCounts[c.id] : 0) || 0;
         return `
-            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" onmouseenter="prefetchMensagens(${c.id})" ontouchstart="prefetchMensagens(${c.id})" ${c.wallpaper ? `style="--chat-wallpaper: url('${c.wallpaper}')"` : ''}>
+            <div class="chat-item ${isActive ? 'active' : ''}" onclick="abrirConversa(${c.id})" onmouseenter="prefetchMensagens(${c.id})" ontouchstart="prefetchMensagens(${c.id})" ${c.display_wallpaper ? `style="--chat-wallpaper: url('${c.display_wallpaper}')"` : ''}>
                 <div class="chat-item-avatar">
                     ${c.display_foto
                         ? `<img src="${c.display_foto}" alt="" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`
@@ -289,6 +289,9 @@ async function abrirConversa(id) {
     renderParticipantsSidebar(conv);
     renderConversasList();
     renderPinnedMessageBar();
+    
+    // Apply background
+    applyActiveChatWallpaper(conv.display_wallpaper);
     
     await Promise.all(promises);
     document.getElementById('chatInput').focus();
@@ -1698,6 +1701,8 @@ function renderGrupoWallGifs(gifs) {
 function setGrupoWallpaper(url) {
     if (!conversaAtual) return;
     conversaAtual.wallpaper = url;
+    conversaAtual.display_wallpaper = url;
+    applyActiveChatWallpaper(url);
     document.getElementById('grupoWallPreview').innerHTML = `<img src="${url}" style="width:100%; height:100%; object-fit:cover;">`;
     renderConversasList();
     showToast('Plano de fundo atualizado!', 'success');
@@ -1706,6 +1711,8 @@ function setGrupoWallpaper(url) {
 function removerGrupoWall() {
     if (!conversaAtual) return;
     conversaAtual.wallpaper = '';
+    conversaAtual.display_wallpaper = '';
+    applyActiveChatWallpaper(null);
     document.getElementById('grupoWallPreview').innerHTML = '<div style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; opacity:0.3; font-size:0.8rem;">Sem fundo</div>';
     renderConversasList();
     showToast('Fundo removido','info');
@@ -2122,6 +2129,10 @@ window.initPlaceholderWallpaper = async function() {
         const saved = serverWall || localStorage.getItem(WALLPAPER_STORAGE_KEY);
         if (saved) {
             setPlaceholderWallpaper(saved, false);
+            // Also apply to main area if no chat is open or as a fallback
+            if (!conversaAtual) {
+                applyActiveChatWallpaper(null);
+            }
         }
     } catch (e) {
         console.error('[Wallpaper] Init failed:', e);
@@ -2160,6 +2171,20 @@ window.syncWallpaperToServer = async function(url) {
     }
 };
 
+window.applyActiveChatWallpaper = function(url) {
+    const main = document.getElementById('chatMain');
+    if (!main) return;
+    
+    // If no specific conversation wallpaper, fallback to global placeholder wallpaper
+    const finalUrl = url || (typeof currentUser !== 'undefined' && currentUser ? currentUser.wallpaper_placeholder : null) || localStorage.getItem(WALLPAPER_STORAGE_KEY);
+    
+    if (finalUrl) {
+        main.style.setProperty('--active-chat-wallpaper', `url('${finalUrl}')`);
+    } else {
+        main.style.setProperty('--active-chat-wallpaper', 'none');
+    }
+};
+
 window.setPlaceholderWallpaper = function(url, save = true) {
     const placeholder = document.querySelector('.chat-placeholder');
     if (!placeholder) {
@@ -2178,6 +2203,11 @@ window.setPlaceholderWallpaper = function(url, save = true) {
             localStorage.setItem(WALLPAPER_STORAGE_KEY, url);
             syncWallpaperToServer(url);
             showToast('Wallpaper atualizado! 🎨', 'success');
+            
+            // If we are in an active chat without a specific wallpaper, update it too
+            if (conversaAtual && !conversaAtual.wallpaper) {
+                applyActiveChatWallpaper(url);
+            }
         }
     } else {
         placeholder.style.backgroundImage = 'none';

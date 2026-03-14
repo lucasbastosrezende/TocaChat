@@ -422,9 +422,9 @@ def listar_conversas():
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
-            # Derivar apenas nome/foto do outro participante em uma query leve
+            # Derivar apenas nome/foto/wallpaper do outro participante em uma query leve
             other = db.execute('''
-                SELECT COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto 
+                SELECT COALESCE(NULLIF(u.nome, ""), u.username) as nome, u.foto, u.wallpaper
                 FROM conversa_membros cm 
                 JOIN usuarios u ON cm.usuario_id = u.id
                 WHERE cm.conversa_id = ? AND cm.usuario_id != ?
@@ -433,13 +433,16 @@ def listar_conversas():
             if other:
                 conv['display_nome'] = other['nome']
                 conv['display_foto'] = other['foto'] or ''
+                conv['display_wallpaper'] = other['wallpaper'] or ''
             else:
                 # Fallback se for um chat "consigo mesmo" ou estado inconsistente
                 conv['display_nome'] = 'Minhas Anotações'
                 conv['display_foto'] = ''
+                conv['display_wallpaper'] = ''
         else:
             conv['display_nome'] = c['nome'] or 'Grupo'
             conv['display_foto'] = c['foto'] or ''
+            conv['display_wallpaper'] = c['wallpaper'] or ''
 
         result.append(conv)
 
@@ -469,9 +472,11 @@ def obter_conversa(id):
         other = [m for m in conv['membros'] if m['id'] != uid]
         conv['display_nome'] = other[0]['nome'] if other else 'Chat'
         conv['display_foto'] = other[0]['foto'] or '' if other else ''
+        conv['display_wallpaper'] = other[0]['wallpaper'] or '' if other else ''
     else:
         conv['display_nome'] = conv.get('nome') or 'Grupo'
         conv['display_foto'] = conv.get('foto') or ''
+        conv['display_wallpaper'] = conv.get('wallpaper') or ''
     return jsonify(conv)
 
 
