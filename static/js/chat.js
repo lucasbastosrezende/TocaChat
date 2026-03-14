@@ -256,7 +256,9 @@ async function abrirConversa(id) {
 
     // Show unified call button
     document.getElementById('btnCallAudio').classList.remove('hidden');
-    document.getElementById('btnCallAudio').onclick = () => joinCall();
+    document.getElementById('btnCallAudio').onclick = () => {
+        if (typeof startCall === 'function') startCall();
+    };
     document.getElementById('btnCallVideo').classList.add('hidden'); // Hidden — camera toggles inside call
 
     const subtitle = conv.tipo === 'grupo'
