@@ -2,12 +2,16 @@ import sqlite3
 import os
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toca.db')
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toca.db')
+
+
+def get_db_path():
+    return os.environ.get('TOCACHAT_DB_PATH', DEFAULT_DB_PATH)
 
 
 def get_db():
     """Retorna uma conexão com o banco de dados SQLite."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -119,6 +123,19 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS mensagem_reacoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mensagem_id INTEGER NOT NULL,
+            usuario_id INTEGER NOT NULL,
+            emoji TEXT NOT NULL,
+            criado_em TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (mensagem_id) REFERENCES mensagens(id) ON DELETE CASCADE,
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+            UNIQUE (mensagem_id, usuario_id, emoji)
+        )
+    ''')
+
     # ── Safe column migrations (never lose data) ──
     migrations = [
         ('mensagens', 'subtopico_id', 'INTEGER'),
@@ -144,6 +161,8 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversa_membros_usuario ON conversa_membros(usuario_id, conversa_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_reply ON mensagens(reply_to_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_reacoes_msg ON mensagem_reacoes(mensagem_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_reacoes_usuario ON mensagem_reacoes(usuario_id)')
 
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_mensagens_criado ON mensagens(criado_em)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_sinais_destinatario ON sinais_call(destinatario_id)')
