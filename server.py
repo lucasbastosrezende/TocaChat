@@ -114,6 +114,49 @@ def get_user_id():
     return session.get('usuario_id')
 
 
+def build_reactions_map(db, message_ids, current_user_id):
+    if not message_ids:
+        return {}
+
+    placeholders = ','.join(['?'] * len(message_ids))
+    rows = db.execute(f'''
+        SELECT mensagem_id, emoji, usuario_id
+        FROM mensagem_reacoes
+        WHERE mensagem_id IN ({placeholders})
+    ''', tuple(message_ids)).fetchall()
+
+    reaction_users = {}
+    for row in rows:
+        key = (row['mensagem_id'], row['emoji'])
+        reaction_users.setdefault(key, set()).add(row['usuario_id'])
+
+    reactions_map = {}
+    for (mensagem_id, emoji), users in reaction_users.items():
+        reactions_map.setdefault(mensagem_id, []).append({
+            'emoji': emoji,
+            'total': len(users),
+            'reagiu': current_user_id in users
+        })
+
+    for mensagem_id in reactions_map:
+        reactions_map[mensagem_id].sort(key=lambda item: (-item['total'], item['emoji']))
+
+    return reactions_map
+
+
+def attach_reactions(db, messages, current_user_id):
+    if not messages:
+        return messages
+
+    message_ids = [msg['id'] for msg in messages]
+    reactions_map = build_reactions_map(db, message_ids, current_user_id)
+
+    for msg in messages:
+        msg['reacoes'] = reactions_map.get(msg['id'], [])
+
+    return messages
+
+
 # ══════════════════════════════════════════════
 #  Servir Frontend (SPA)
 # ══════════════════════════════════════════════
@@ -688,7 +731,9 @@ def listar_mensagens(id):
                 ORDER BY m.criado_em DESC LIMIT 50
             ''', (id,)).fetchall()
         msgs = list(reversed(msgs))
-    return jsonify([dict(m) for m in msgs])
+
+    result = attach_reactions(db, [dict(m) for m in msgs], get_user_id())
+    return jsonify(result)
 
 
 @app.route('/api/conversas/<int:id>/mensagens', methods=['POST'])
@@ -725,9 +770,122 @@ def enviar_mensagem(id):
         WHERE m.id = ?
     ''', (cursor.lastrowid,)).fetchone()
     msg_dict = dict(msg)
+    msg_dict['reacoes'] = []
     # Notify socket room
     socketio.emit('new_message', msg_dict, room=f"conv_{id}")
     return jsonify(msg_dict), 201
+
+
+@app.route('/api/conversas/<int:id>/mensagens/busca', methods=['GET'])
+@login_required
+def buscar_mensagens(id):
+    uid = get_user_id()
+    db = get_db_g()
+
+    termo = request.args.get('q', '').strip()
+    if len(termo) < 2:
+        return jsonify({'erro': 'Informe ao menos 2 caracteres para busca'}), 400
+
+    limite = request.args.get('limite', '50')
+    try:
+        limite_int = min(max(int(limite), 1), 100)
+    except ValueError:
+        return jsonify({'erro': 'Parâmetro limite inválido'}), 400
+
+    subtopico_id = request.args.get('subtopico_id', '').strip()
+
+    is_member = db.execute(
+        'SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?',
+        (id, uid)
+    ).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Você não é membro desta conversa'}), 403
+
+    like_termo = f"%{termo}%"
+    if subtopico_id:
+        query = '''
+            SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                   r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+            FROM mensagens m
+            JOIN usuarios u ON m.usuario_id = u.id
+            LEFT JOIN mensagens r ON m.reply_to_id = r.id
+            LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+            WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL AND m.conteudo LIKE ?
+            ORDER BY m.criado_em DESC
+            LIMIT ?
+        '''
+        params = (id, int(subtopico_id), like_termo, limite_int)
+    else:
+        query = '''
+            SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                   r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+            FROM mensagens m
+            JOIN usuarios u ON m.usuario_id = u.id
+            LEFT JOIN mensagens r ON m.reply_to_id = r.id
+            LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+            WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL AND m.conteudo LIKE ?
+            ORDER BY m.criado_em DESC
+            LIMIT ?
+        '''
+        params = (id, like_termo, limite_int)
+
+    msgs = [dict(m) for m in db.execute(query, params).fetchall()]
+    msgs.reverse()
+    msgs = attach_reactions(db, msgs, uid)
+    return jsonify(msgs)
+
+
+@app.route('/api/mensagens/<int:msg_id>/reacoes', methods=['POST'])
+@login_required
+def reagir_mensagem(msg_id):
+    uid = get_user_id()
+    db = get_db_g()
+    data = request.json or {}
+    emoji = (data.get('emoji') or '').strip()
+
+    if not emoji:
+        return jsonify({'erro': 'Emoji é obrigatório'}), 400
+
+    if len(emoji) > 16:
+        return jsonify({'erro': 'Emoji inválido'}), 400
+
+    msg = db.execute('SELECT id, conversa_id FROM mensagens WHERE id = ? AND excluido_em IS NULL', (msg_id,)).fetchone()
+    if not msg:
+        return jsonify({'erro': 'Mensagem não encontrada'}), 404
+
+    is_member = db.execute(
+        'SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?',
+        (msg['conversa_id'], uid)
+    ).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Você não é membro desta conversa'}), 403
+
+    existing = db.execute(
+        'SELECT id FROM mensagem_reacoes WHERE mensagem_id = ? AND usuario_id = ? AND emoji = ?',
+        (msg_id, uid, emoji)
+    ).fetchone()
+
+    if existing:
+        db.execute('DELETE FROM mensagem_reacoes WHERE id = ?', (existing['id'],))
+        action = 'removed'
+    else:
+        db.execute(
+            'INSERT INTO mensagem_reacoes (mensagem_id, usuario_id, emoji, criado_em) VALUES (?, ?, ?, ?)',
+            (msg_id, uid, emoji, agora_manaus().isoformat())
+        )
+        action = 'added'
+
+    db.commit()
+    reacoes = build_reactions_map(db, [msg_id], uid).get(msg_id, [])
+    payload = {
+        'mensagem_id': msg_id,
+        'conversa_id': msg['conversa_id'],
+        'reacoes': reacoes,
+        'action': action,
+        'emoji': emoji
+    }
+    socketio.emit('message_reaction_updated', payload, room=f"conv_{msg['conversa_id']}")
+    return jsonify(payload)
 
 
 @app.route('/api/chat/sync', methods=['GET'])
@@ -830,6 +988,7 @@ def chat_sync():
         
         query += ' AND m.excluido_em IS NULL ORDER BY m.criado_em ASC'
         mensagens = [dict(m) for m in db.execute(query, params).fetchall()]
+        mensagens = attach_reactions(db, mensagens, uid)
 
     # 3. Handle Active Call Status
     # Update current user's call status via memory dict
@@ -986,6 +1145,7 @@ def restaurar_mensagem(msg_id):
     ''', (msg_id,)).fetchone()
     
     msg_dict = dict(res_msg)
+    msg_dict['reacoes'] = []
     socketio.emit('new_message', msg_dict, room=f"conv_{msg['conversa_id']}")
     
     return jsonify({'status': 'ok', 'mensagem': msg_dict}), 200
