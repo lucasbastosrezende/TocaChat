@@ -369,6 +369,62 @@ async function handleWebrtcIce(remoteId, candidate) {
         return;
     }
 
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    pc.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        console.log('[WebRTC] Stream recebida de', key,
+            '— audio:', remoteStream.getAudioTracks().length,
+            'video:', remoteStream.getVideoTracks().length);
+        renderRemoteParticipant(key, remoteStream);
+    };
+
+    pc.onicecandidate = (event) => {
+        if (!event.candidate) return;
+        sendCallSignal(remoteId, 'webrtc_ice', { candidate: event.candidate }, callSourceId);
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+            console.warn('[WebRTC] Conexão falhou com', key);
+            removeRemoteParticipant(key);
+        }
+        if (pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+            removeRemoteParticipant(key);
+        }
+    };
+
+    return pc;
+}
+
+async function createAndSendOffer(remoteId) {
+    const pc = await ensurePeerConnection(remoteId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await sendCallSignal(remoteId, 'webrtc_offer', { sdp: offer }, callSourceId);
+}
+
+async function handleWebrtcOffer(remoteId, sdp) {
+    if (!isInCall) return;
+    const pc = await ensurePeerConnection(remoteId);
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await sendCallSignal(remoteId, 'webrtc_answer', { sdp: answer }, callSourceId);
+}
+
+async function handleWebrtcAnswer(remoteId, sdp) {
+    const pc = activeCalls[String(remoteId)];
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+}
+
+async function handleWebrtcIce(remoteId, candidate) {
+    const pc = activeCalls[String(remoteId)] || await ensurePeerConnection(remoteId);
     try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
@@ -716,6 +772,8 @@ async function _enterCall() {
         // Só o iniciador cria ofertas para evitar glare (offer collision)
         const attemptCallToOthers = async () => {
             if (!isCallInitiator) return;
+        // Tenta conexões mesh com todos os participantes
+        const attemptCallToOthers = async () => {
             for (const m of others) {
                 const key = String(m.id);
                 if (activeCalls[key]) continue;
