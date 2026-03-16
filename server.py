@@ -145,34 +145,15 @@ def index():
 
 
 # ══════════════════════════════════════════════
-#  WebRTC / PeerJS runtime config
+#  WebRTC runtime config
 # ══════════════════════════════════════════════
 @app.route('/api/webrtc/config', methods=['GET'])
 def webrtc_config():
     """
-    Runtime config for the browser (PeerJS + ICE servers).
+    Runtime ICE/TURN config for the browser.
 
-    Why: static JS can't read env; 4G/CGNAT needs TURN; peers must NEVER silently
-    fall back to public PeerJS cloud, otherwise they end up on different brokers.
+    Why: static JS cannot read env vars; 4G/CGNAT scenarios often need TURN.
     """
-    # PeerJS broker (signaling) settings
-    peer_host = os.getenv('PEERJS_HOST', '').strip() or request.host.split(':')[0]
-    peer_path = os.getenv('PEERJS_PATH', '/myapp').strip() or '/myapp'
-
-    try:
-        peer_port = int(os.getenv('PEERJS_PORT', '9000'))
-    except ValueError:
-        peer_port = 9000
-
-    # If the app itself is behind HTTPS/WSS, clients should use secure websockets.
-    peer_secure_env = os.getenv('PEERJS_SECURE', '').strip().lower()
-    if peer_secure_env in ('1', 'true', 'yes', 'on'):
-        peer_secure = True
-    elif peer_secure_env in ('0', 'false', 'no', 'off'):
-        peer_secure = False
-    else:
-        peer_secure = request.is_secure
-
     # ICE servers (STUN + optional TURN)
     ice_servers: List[Dict[str, Any]] = [
         {'urls': 'stun:stun.l.google.com:19302'},
@@ -195,12 +176,6 @@ def webrtc_config():
 
     # NOTE: keep policy "all" so STUN is tried first, TURN used when needed (4G/CGNAT)
     return jsonify({
-        'peer': {
-            'host': peer_host,
-            'port': peer_port,
-            'path': peer_path,
-            'secure': peer_secure
-        },
         'rtc': {
             'iceServers': ice_servers,
             'iceTransportPolicy': os.getenv('ICE_TRANSPORT_POLICY', 'all').strip() or 'all'

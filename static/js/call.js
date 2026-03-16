@@ -1,15 +1,12 @@
 // ============================================================================
-//  TocaChat WebRTC — PeerJS (Mesh self-hosted) + TURN
+//  TocaChat WebRTC — Native RTCPeerConnection (Mesh) + TURN
 //  Refactored: proper Ring → Accept → Connect flow
 // ============================================================================
 
 // ── Core state ──────────────────────────────────────────────────────────────
-let peer = null;
-let activeCalls = {};           // participantId → PeerJS Call object
+let activeCalls = {};           // participantId → RTCPeerConnection
 let localStream = null;
 let isJoined = false;
-
-let pendingCalls = [];          // calls received before local media is ready
 
 let isInCall = false;
 window.isInCall = false;
@@ -28,21 +25,8 @@ window.callSourceId = null;
 const usersInCall = new Set();
 window.usersInCall = usersInCall;
 
-// ── PeerJS reconnect state ───────────────────────────────────────────────────
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-let reconnectTimer = null;
-let peerHadOpenOnce = false;
-let isPeerOpening = false;
+let rtcConfigCache = null;
 let callRetryInterval = null;
-
-// Determine default peer port based on environment
-function getDefaultPeerPort() {
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    if (isLocal) return 9000; // Directly to PeerServer
-    return window.location.port || (window.location.protocol === 'https:' ? 443 : 80);
-}
-let peerCurrentPort = getDefaultPeerPort();
 
 // ── Ringtone ─────────────────────────────────────────────────────────────────
 let ringtoneCtx = null;
@@ -174,6 +158,21 @@ window.handleIncomingSignal = async function (sinal) {
         markParticipantInCall(dados.userId, false);
         return;
     }
+
+    if (tipo === 'webrtc_offer') {
+        await handleWebrtcOffer(remetente_id, dados.sdp);
+        return;
+    }
+
+    if (tipo === 'webrtc_answer') {
+        await handleWebrtcAnswer(remetente_id, dados.sdp);
+        return;
+    }
+
+    if (tipo === 'webrtc_ice') {
+        await handleWebrtcIce(remetente_id, dados.candidate);
+        return;
+    }
 };
 
 // ============================================================================
@@ -253,180 +252,92 @@ window.reapplyCallBadges = reapplyCallBadges;
 window.reapplyParticipantsInCall = reapplyCallBadges;
 
 // ============================================================================
-//  PeerJS — init & reconnect
+//  Native WebRTC helpers (signaling via /api/calls/signal)
 // ============================================================================
-let webrtcConfigCache = null;
-
 async function getWebrtcConfig() {
-    if (webrtcConfigCache) return webrtcConfigCache;
+    if (rtcConfigCache) return rtcConfigCache;
     try {
         const res = await api('/api/webrtc/config');
-        if (res) {
-            webrtcConfigCache = res;
-            return webrtcConfigCache;
-        }
+        if (res?.rtc) rtcConfigCache = res.rtc;
     } catch (e) {
-        console.warn("[WebRTC] Failed to fetch config from server", e);
+        console.warn('[WebRTC] Falha ao buscar configuração ICE no servidor', e);
     }
-    return null;
-}
-
-async function initPeer() {
-    if (isPeerOpening) return;
-    if (peer && !peer.destroyed && peer.open) return;
-    if (peer && !peer.destroyed) { try { peer.destroy(); } catch (e) { /* ignore */ } }
-    peer = null;
-    await _createPeer();
-}
-
-function handlePeerReconnect() {
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        console.error('[PeerJS] Máximo de tentativas atingido');
-        reconnectAttempts = 0;
-        return;
-    }
-    reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 15000);
-    console.warn(`[PeerJS] Reconectando em ${delay}ms (tentativa ${reconnectAttempts})`);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(initPeer, delay);
-}
-
-async function _createPeer() {
-    if (!navigator.onLine) { console.warn('[PeerJS] Offline'); return; }
-    isPeerOpening = true;
-
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    const isHttps = window.location.protocol === 'https:';
-
-    // When behind the HTTPS gateway, PeerJS is proxied on the same port as the page.
-    // Only use the direct PeerJS port (9000) when running locally without the gateway.
-    const effectivePort = isLocal
-        ? 9000
-        : parseInt(window.location.port) || (isHttps ? 443 : 80);
-
-    const peerOptions = {
-        host: window.location.hostname,
-        port: effectivePort,
-        path: '/myapp',
-        key: 'peerjs',
-        secure: isHttps,
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-            ]
-        },
-        debug: 2,
-        pingInterval: 20000,
-        reliable: true
+    return rtcConfigCache || {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+        ]
     };
-
-    // Fetch server-side config for ICE/TURN servers and path overrides
-    const serverConfig = await getWebrtcConfig();
-    if (serverConfig) {
-        // Only use the server-provided host/port when on localhost (direct connection)
-        if (isLocal) {
-            peerOptions.host = serverConfig.peer.host || peerOptions.host;
-            peerOptions.port = serverConfig.peer.port || peerOptions.port;
-        }
-        // Always apply path, secure flag, and ICE config from server
-        peerOptions.path = serverConfig.peer.path || peerOptions.path;
-        peerOptions.secure = serverConfig.peer.secure !== undefined ? serverConfig.peer.secure : peerOptions.secure;
-        if (serverConfig.rtc) peerOptions.config = serverConfig.rtc;
-    }
-    peerCurrentPort = peerOptions.port;
-
-    console.log('[PeerJS] Inicializando', peerOptions);
-
-    try {
-        peer = new Peer(String(currentUser.id), peerOptions);
-    } catch (e) {
-        console.error('[PeerJS] Falha ao criar Peer', e);
-        isPeerOpening = false;
-        return;
-    }
-
-    peer.on('open', id => {
-        console.log('[PeerJS] Conectado com sucesso ao servidor de sinalização. ID:', id);
-        peerHadOpenOnce = true;
-        reconnectAttempts = 0;
-        isPeerOpening = false;
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    });
-
-    peer.on('disconnected', () => {
-        console.warn('[PeerJS] Conexão com o servidor de sinalização perdida. Tentando reconectar...');
-        isPeerOpening = false;
-        // Try PeerJS built-in reconnect first (faster than full re-init)
-        if (peer && !peer.destroyed) {
-            try {
-                peer.reconnect();
-                return;
-            } catch (e) { /* ignore, fall through to full reinit */ }
-        }
-        handlePeerReconnect();
-    });
-
-    peer.on('close', () => {
-        console.warn('[PeerJS] Conexão Peer encerrada permanentemente.');
-        isPeerOpening = false;
-    });
-
-    // ── Incoming PeerJS media call (WebRTC level) ─────────────────────────
-    peer.on('call', call => {
-        console.log('[PeerJS] Chamada PeerJS recebida de', call.peer);
-
-        if (isInCall && localStream) {
-            call.answer(localStream);
-            handleCallStream(call);
-            if (call.metadata) updateRemoteParticipantState(call.peer, call.metadata);
-        } else if (isInCall && !localStream) {
-            pendingCalls.push(call);
-        } else {
-            // Not in call yet — queue it so that when we enter the call we can answer
-            console.log('[PeerJS] Chamada PeerJS recebida antes de entrar na call — enfileirando');
-            pendingCalls.push(call);
-        }
-    });
-
-    peer.on('error', err => {
-        isPeerOpening = false;
-        console.error('[PeerJS] Erro detectado:', err.type, err);
-        
-        if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-            console.warn(`[PeerJS] Erro de conexão (${err.type}). Reconectando...`);
-            handlePeerReconnect();
-        } else if (err.type === 'peer-unavailable') {
-            console.log('[PeerJS] Peer de destino não encontrado ou offline.');
-        } else {
-            console.error('[PeerJS] Erro crítico não tratado:', err);
-        }
-    });
 }
 
-function handleCallStream(call) {
-    const key = String(call.peer);
-    if (activeCalls[key]) activeCalls[key].close();
-    activeCalls[key] = call;
+async function ensurePeerConnection(remoteId) {
+    const key = String(remoteId);
+    if (activeCalls[key]) return activeCalls[key];
 
-    call.on('stream', remoteStream => {
-        console.log('[PeerJS] Stream recebida de', call.peer,
+    const rtcConfig = await getWebrtcConfig();
+    const pc = new RTCPeerConnection(rtcConfig);
+    activeCalls[key] = pc;
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    pc.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        console.log('[WebRTC] Stream recebida de', key,
             '— audio:', remoteStream.getAudioTracks().length,
             'video:', remoteStream.getVideoTracks().length);
+        renderRemoteParticipant(key, remoteStream);
+    };
 
-        if (remoteStream.getTracks().length === 0) {
-            console.warn('[PeerJS] Stream sem tracks de', call.peer);
-            return;
+    pc.onicecandidate = (event) => {
+        if (!event.candidate) return;
+        sendCallSignal(remoteId, 'webrtc_ice', { candidate: event.candidate }, callSourceId);
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+            console.warn('[WebRTC] Conexão falhou com', key);
+            removeRemoteParticipant(key);
         }
-        renderRemoteParticipant(call.peer, remoteStream, call.metadata);
-    });
+        if (pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+            removeRemoteParticipant(key);
+        }
+    };
 
-    call.on('close', () => removeRemoteParticipant(call.peer));
-    call.on('error', err => {
-        console.error('[PeerJS] Erro de rede com', call.peer, err);
-        removeRemoteParticipant(call.peer);
-    });
+    return pc;
+}
+
+async function createAndSendOffer(remoteId) {
+    const pc = await ensurePeerConnection(remoteId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await sendCallSignal(remoteId, 'webrtc_offer', { sdp: offer }, callSourceId);
+}
+
+async function handleWebrtcOffer(remoteId, sdp) {
+    if (!isInCall) return;
+    const pc = await ensurePeerConnection(remoteId);
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await sendCallSignal(remoteId, 'webrtc_answer', { sdp: answer }, callSourceId);
+}
+
+async function handleWebrtcAnswer(remoteId, sdp) {
+    const pc = activeCalls[String(remoteId)];
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+}
+
+async function handleWebrtcIce(remoteId, candidate) {
+    const pc = activeCalls[String(remoteId)] || await ensurePeerConnection(remoteId);
+    try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+        console.warn('[WebRTC] Falha ao adicionar ICE candidate', e);
+    }
 }
 
 // ============================================================================
@@ -447,15 +358,6 @@ async function getLocalMedia() {
         if (isMuted) localStream.getAudioTracks().forEach(t => t.enabled = false);
 
         updateLocalVideo();
-
-        // Answer any PeerJS calls that arrived before media was ready
-        if (pendingCalls.length > 0) {
-            pendingCalls.forEach(pendingCall => {
-                pendingCall.answer(localStream);
-                handleCallStream(pendingCall);
-            });
-            pendingCalls = [];
-        }
 
         return true;
     } catch (err) {
@@ -662,9 +564,9 @@ async function startCall() {
     isRinging = true;
     markParticipantInCall(currentUser.id, true);
 
-    // Pre-initialise PeerJS and local media in the background
-    initPeer();
+    // Pré-aquecer mídia e ICE em background
     getLocalMedia(); // non-blocking pre-warm
+    getWebrtcConfig();
 
     // Show the "Chamando..." overlay
     const targetName = others.length === 1 ? others[0].nome : `${others.length} pessoas`;
@@ -718,17 +620,6 @@ function _cancelRingTimeout() {
     if (ringTimeout) { clearTimeout(ringTimeout); ringTimeout = null; }
 }
 
-// Wait until peer is open (or timeout)
-function waitForPeer(timeoutMs = 10000) {
-    return new Promise(resolve => {
-        if (peer && peer.open) { resolve(true); return; }
-        const start = Date.now();
-        const interval = setInterval(() => {
-            if (peer && peer.open) { clearInterval(interval); resolve(true); return; }
-            if (Date.now() - start > timeoutMs) { clearInterval(interval); resolve(false); }
-        }, 200);
-    });
-}
 
 // ============================================================================
 //  ▶  _enterCall() — shared by CALLER (after ring_accept) and CALLEE (after accept button)
@@ -745,10 +636,10 @@ async function _enterCall() {
     showCallUI();
     updateCallStatusText('Conectando dispositivos...');
 
-    // Ensure PeerJS is initialised and get media in parallel
+    // Inicializa mídia local e ICE/TURN
     const [hasMedia] = await Promise.all([
         getLocalMedia(),
-        initPeer()
+        getWebrtcConfig()
     ]);
 
     if (!hasMedia || !localStream) {
@@ -757,12 +648,7 @@ async function _enterCall() {
         return;
     }
 
-    // Wait for PeerJS to be ready (up to 10 s)
     updateCallStatusText('Conectando ao servidor de chamadas...');
-    const peerReady = await waitForPeer(10000);
-    if (!peerReady) {
-        console.warn('[PeerJS] Timeout aguardando conexão — tentando mesmo assim');
-    }
     updateCallStatusText('Na chamada');
     isJoined = true;
 
@@ -776,23 +662,20 @@ async function _enterCall() {
             sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
         });
 
-        // Attempt PeerJS mesh connections
+        // Tenta conexões mesh com todos os participantes
         const attemptCallToOthers = async () => {
-            if (!peer || !peer.open) { console.log('[PeerJS] Aguardando peer...'); return; }
             for (const m of others) {
                 const key = String(m.id);
                 if (activeCalls[key]) continue;
 
-                console.log(`[PeerJS] Iniciando chamada para ${m.nome} (${key})`);
-                const call = peer.call(key, localStream, {
-                    metadata: { isMuted, isCameraOn }
-                });
-                if (call) handleCallStream(call);
+                console.log(`[WebRTC] Iniciando oferta para ${m.nome} (${key})`);
+                await createAndSendOffer(key);
+                sendCallSignal(m.id, 'state', { isMuted, isCameraOn }, callSourceId);
             }
         };
 
         const tryConnect = () => {
-            if (!isInCall || !peer || !localStream || !window.conversaAtual) return;
+            if (!isInCall || !localStream || !window.conversaAtual) return;
             attemptCallToOthers();
         };
 
@@ -856,13 +739,10 @@ async function endCall(sendSignal = true) {
     }
 
     // Cleanup
-    reconnectAttempts = 0;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    pendingCalls = [];
     if (callRetryInterval) { clearInterval(callRetryInterval); callRetryInterval = null; }
 
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-    Object.values(activeCalls).forEach(call => call.close());
+    Object.values(activeCalls).forEach(pc => pc.close());
     activeCalls = {};
 
     isInCall = false;
@@ -906,12 +786,10 @@ async function toggleCamera() {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
             }
 
-            Object.values(activeCalls).forEach(call => {
-                if (call.peerConnection) {
-                    const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
-                    if (sender) sender.replaceTrack(videoTrack).catch(e => console.error(e));
-                    else if (call.peerConnection.signalingState !== 'closed') call.peerConnection.addTrack(videoTrack, localStream);
-                }
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) sender.replaceTrack(videoTrack).catch(e => console.error(e));
+                else if (pc.signalingState !== 'closed') pc.addTrack(videoTrack, localStream);
             });
 
             const localVid = document.getElementById('localVideo');
@@ -968,11 +846,9 @@ async function switchMicrophone(deviceId, label) {
             localStream.getAudioTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
             localStream.addTrack(newAudioTrack);
             if (isMuted) newAudioTrack.enabled = false;
-            Object.values(activeCalls).forEach(call => {
-                if (call.peerConnection) {
-                    const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'audio');
-                    if (sender) sender.replaceTrack(newAudioTrack).catch(e => console.warn(e));
-                }
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+                if (sender) sender.replaceTrack(newAudioTrack).catch(e => console.warn(e));
             });
         }
         showToast(`Microfone: ${label}`, 'success');
