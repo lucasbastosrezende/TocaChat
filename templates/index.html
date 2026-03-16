@@ -214,12 +214,12 @@
                         <div class="call-inline-view hidden" id="callInlineView">
                             <div class="call-inline-header">
                                 <div class="call-inline-info">
-                                    <span class="call-inline-title">📞 Sala TocaChat</span>
+                                    <span class="call-inline-title" id="callRoomTitle">Sala TocaChat</span>
                                     <span class="call-inline-status" id="callStatus">Conectando...</span>
                                 </div>
+                                <div class="call-inline-meta" id="callInlineMeta">0 participantes</div>
                                 <button class="call-inline-toggle" id="btnBackToMessages" title="Voltar para mensagens">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                                     </svg>
                                     <span>Mensagens</span>
@@ -227,24 +227,24 @@
                             </div>
 
                             <div class="call-inline-body">
-                                <!-- Remote participants (auto-populated by JS) -->
                                 <div class="call-participants-grid" id="remoteVideosGrid"></div>
 
-                                <!-- Local user -->
-                                <div class="call-local-section">
-                                    <video id="localVideo" class="hidden" autoplay playsinline muted></video>
-                                    <div class="call-local-avatar" id="localVideoAvatar">
-                                        <span id="localAvatarContent">Eu</span>
+                                <aside class="call-local-section">
+                                    <div class="call-local-title">Seu preview</div>
+                                    <div class="call-local-media-wrap">
+                                        <video id="localVideo" class="hidden" autoplay playsinline muted></video>
+                                        <div class="call-local-avatar" id="localVideoAvatar">
+                                            <span id="localAvatarContent">Eu</span>
+                                        </div>
+                                        <div class="call-local-chip">Você</div>
                                     </div>
-                                    <div class="call-local-label">Você</div>
-                                </div>
+                                </aside>
                             </div>
 
                             <div class="call-controls">
                                 <div class="mic-control-group">
                                     <button class="call-control-btn" id="btnMuteMic" title="Mutar">
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-                                            stroke="currentColor" stroke-width="2">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
                                             <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                                             <line x1="12" y1="19" x2="12" y2="23" />
@@ -253,18 +253,15 @@
                                     </button>
                                 </div>
                                 <button class="call-control-btn" id="btnToggleCamera" title="Ligar Câmera">
-                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <path d="M16.5 7.5l6.5-4v17l-6.5-4" />
                                         <path d="M2 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2z" />
                                         <line x1="1" y1="1" x2="23" y2="23" />
                                     </svg>
                                 </button>
                                 <button class="call-control-btn call-control-end" id="btnEndCall" title="Sair da Sala">
-                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2">
-                                        <path
-                                            d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91" />
+                                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91" />
                                         <line x1="1" y1="1" x2="23" y2="23" />
                                     </svg>
                                 </button>
@@ -274,7 +271,8 @@
                         <!-- Call active indicator bar (shown when viewing messages during call) -->
                         <div class="call-active-bar hidden" id="callActiveBar" onclick="showCallView()">
                             <span class="call-active-bar-dot"></span>
-                            <span>Em chamada — Clique para voltar</span>
+                            <span class="call-active-main">Chamada ativa</span>
+                            <span class="call-active-sub" id="callActiveHint">Toque para voltar</span>
                         </div>
 
                         <div class="chat-messages hidden" id="chatMessages"></div>
@@ -476,7 +474,6 @@
     <!-- ═══ Scripts ═══ -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="/static/js/app.js?v=1.0.1"></script>
     <script src="/static/js/auth.js?v=1.0.1"></script>
     <script src="/static/js/chat.js?v=1.0.1"></script>

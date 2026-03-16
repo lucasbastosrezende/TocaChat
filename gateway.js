@@ -16,7 +16,6 @@ const app = express();
 
 const PORT = 8080;
 const FLASK_SERVER = 'http://localhost:3000';
-const PEERJS_SERVER = 'http://localhost:9000';
 
 // Carregar Certificados
 const certPath = path.join(__dirname, 'certs', 'fullchain.pem');
@@ -72,10 +71,6 @@ proxy.on('close', (res, socket, head) => {
 });
 
 // Routing
-app.all('/myapp*', (req, res) => {
-    console.log(`[Proxy] Web Request: /myapp* -> PeerJS`);
-    proxy.web(req, res, { target: PEERJS_SERVER });
-});
 
 app.all('/socket.io*', (req, res) => {
     proxy.web(req, res, { target: FLASK_SERVER });
@@ -92,9 +87,7 @@ server.keepAliveTimeout = 65000;
 // Handle WebSocket upgrades
 server.on('upgrade', (req, socket, head) => {
     console.log(`[Gateway] Upgrade request received: ${req.url}`);
-    if (req.url.startsWith('/myapp')) {
-        proxy.ws(req, socket, head, { target: PEERJS_SERVER });
-    } else if (req.url.startsWith('/socket.io')) {
+    if (req.url.startsWith('/socket.io')) {
         proxy.ws(req, socket, head, { target: FLASK_SERVER });
     } else {
         console.warn(`[Gateway] Unauthorized upgrade path: ${req.url}`);
@@ -104,7 +97,6 @@ server.on('upgrade', (req, socket, head) => {
 
 server.listen(PORT, () => {
     console.log(`Gateway unificado rodando em https://tocachat.duckdns.org:${PORT} (SECURE)`);
-    console.log(`- Redirecionando /myapp para PeerJS (9000) com WSS`);
     console.log(`- Redirecionando /socket.io para Flask (3000) com WSS`);
     console.log(`- Redirecionando todo o resto para Flask (3000)`);
 });

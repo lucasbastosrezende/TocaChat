@@ -1,15 +1,12 @@
 // ============================================================================
-//  TocaChat WebRTC — PeerJS (Mesh self-hosted) + TURN
+//  TocaChat WebRTC — Native RTCPeerConnection (Mesh) + TURN
 //  Refactored: proper Ring → Accept → Connect flow
 // ============================================================================
 
 // ── Core state ──────────────────────────────────────────────────────────────
-let peer = null;
-let activeCalls = {};           // participantId → PeerJS Call object
+let activeCalls = {};           // participantId → RTCPeerConnection
 let localStream = null;
 let isJoined = false;
-
-let pendingCalls = [];          // calls received before local media is ready
 
 let isInCall = false;
 window.isInCall = false;
@@ -28,21 +25,10 @@ window.callSourceId = null;
 const usersInCall = new Set();
 window.usersInCall = usersInCall;
 
-// ── PeerJS reconnect state ───────────────────────────────────────────────────
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-let reconnectTimer = null;
-let peerHadOpenOnce = false;
-let isPeerOpening = false;
+let rtcConfigCache = null;
 let callRetryInterval = null;
-
-// Determine default peer port based on environment
-function getDefaultPeerPort() {
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    if (isLocal) return 9000; // Directly to PeerServer
-    return window.location.port || (window.location.protocol === 'https:' ? 443 : 80);
-}
-let peerCurrentPort = getDefaultPeerPort();
+let isCallInitiator = false;
+const pendingIceCandidates = {};
 
 // ── Ringtone ─────────────────────────────────────────────────────────────────
 let ringtoneCtx = null;
@@ -174,6 +160,21 @@ window.handleIncomingSignal = async function (sinal) {
         markParticipantInCall(dados.userId, false);
         return;
     }
+
+    if (tipo === 'webrtc_offer') {
+        await handleWebrtcOffer(remetente_id, dados.sdp);
+        return;
+    }
+
+    if (tipo === 'webrtc_answer') {
+        await handleWebrtcAnswer(remetente_id, dados.sdp);
+        return;
+    }
+
+    if (tipo === 'webrtc_ice') {
+        await handleWebrtcIce(remetente_id, dados.candidate);
+        return;
+    }
 };
 
 // ============================================================================
@@ -253,180 +254,126 @@ window.reapplyCallBadges = reapplyCallBadges;
 window.reapplyParticipantsInCall = reapplyCallBadges;
 
 // ============================================================================
-//  PeerJS — init & reconnect
+//  Native WebRTC helpers (signaling via /api/calls/signal)
 // ============================================================================
-let webrtcConfigCache = null;
-
 async function getWebrtcConfig() {
-    if (webrtcConfigCache) return webrtcConfigCache;
+    if (rtcConfigCache) return rtcConfigCache;
     try {
         const res = await api('/api/webrtc/config');
-        if (res) {
-            webrtcConfigCache = res;
-            return webrtcConfigCache;
-        }
+        if (res?.rtc) rtcConfigCache = res.rtc;
     } catch (e) {
-        console.warn("[WebRTC] Failed to fetch config from server", e);
+        console.warn('[WebRTC] Falha ao buscar configuração ICE no servidor', e);
     }
-    return null;
-}
-
-async function initPeer() {
-    if (isPeerOpening) return;
-    if (peer && !peer.destroyed && peer.open) return;
-    if (peer && !peer.destroyed) { try { peer.destroy(); } catch (e) { /* ignore */ } }
-    peer = null;
-    await _createPeer();
-}
-
-function handlePeerReconnect() {
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        console.error('[PeerJS] Máximo de tentativas atingido');
-        reconnectAttempts = 0;
-        return;
-    }
-    reconnectAttempts++;
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 15000);
-    console.warn(`[PeerJS] Reconectando em ${delay}ms (tentativa ${reconnectAttempts})`);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(initPeer, delay);
-}
-
-async function _createPeer() {
-    if (!navigator.onLine) { console.warn('[PeerJS] Offline'); return; }
-    isPeerOpening = true;
-
-    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    const isHttps = window.location.protocol === 'https:';
-
-    // When behind the HTTPS gateway, PeerJS is proxied on the same port as the page.
-    // Only use the direct PeerJS port (9000) when running locally without the gateway.
-    const effectivePort = isLocal
-        ? 9000
-        : parseInt(window.location.port) || (isHttps ? 443 : 80);
-
-    const peerOptions = {
-        host: window.location.hostname,
-        port: effectivePort,
-        path: '/myapp',
-        key: 'peerjs',
-        secure: isHttps,
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-            ]
-        },
-        debug: 2,
-        pingInterval: 20000,
-        reliable: true
+    return rtcConfigCache || {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+        ]
     };
-
-    // Fetch server-side config for ICE/TURN servers and path overrides
-    const serverConfig = await getWebrtcConfig();
-    if (serverConfig) {
-        // Only use the server-provided host/port when on localhost (direct connection)
-        if (isLocal) {
-            peerOptions.host = serverConfig.peer.host || peerOptions.host;
-            peerOptions.port = serverConfig.peer.port || peerOptions.port;
-        }
-        // Always apply path, secure flag, and ICE config from server
-        peerOptions.path = serverConfig.peer.path || peerOptions.path;
-        peerOptions.secure = serverConfig.peer.secure !== undefined ? serverConfig.peer.secure : peerOptions.secure;
-        if (serverConfig.rtc) peerOptions.config = serverConfig.rtc;
-    }
-    peerCurrentPort = peerOptions.port;
-
-    console.log('[PeerJS] Inicializando', peerOptions);
-
-    try {
-        peer = new Peer(String(currentUser.id), peerOptions);
-    } catch (e) {
-        console.error('[PeerJS] Falha ao criar Peer', e);
-        isPeerOpening = false;
-        return;
-    }
-
-    peer.on('open', id => {
-        console.log('[PeerJS] Conectado com sucesso ao servidor de sinalização. ID:', id);
-        peerHadOpenOnce = true;
-        reconnectAttempts = 0;
-        isPeerOpening = false;
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    });
-
-    peer.on('disconnected', () => {
-        console.warn('[PeerJS] Conexão com o servidor de sinalização perdida. Tentando reconectar...');
-        isPeerOpening = false;
-        // Try PeerJS built-in reconnect first (faster than full re-init)
-        if (peer && !peer.destroyed) {
-            try {
-                peer.reconnect();
-                return;
-            } catch (e) { /* ignore, fall through to full reinit */ }
-        }
-        handlePeerReconnect();
-    });
-
-    peer.on('close', () => {
-        console.warn('[PeerJS] Conexão Peer encerrada permanentemente.');
-        isPeerOpening = false;
-    });
-
-    // ── Incoming PeerJS media call (WebRTC level) ─────────────────────────
-    peer.on('call', call => {
-        console.log('[PeerJS] Chamada PeerJS recebida de', call.peer);
-
-        if (isInCall && localStream) {
-            call.answer(localStream);
-            handleCallStream(call);
-            if (call.metadata) updateRemoteParticipantState(call.peer, call.metadata);
-        } else if (isInCall && !localStream) {
-            pendingCalls.push(call);
-        } else {
-            // Not in call yet — queue it so that when we enter the call we can answer
-            console.log('[PeerJS] Chamada PeerJS recebida antes de entrar na call — enfileirando');
-            pendingCalls.push(call);
-        }
-    });
-
-    peer.on('error', err => {
-        isPeerOpening = false;
-        console.error('[PeerJS] Erro detectado:', err.type, err);
-        
-        if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-            console.warn(`[PeerJS] Erro de conexão (${err.type}). Reconectando...`);
-            handlePeerReconnect();
-        } else if (err.type === 'peer-unavailable') {
-            console.log('[PeerJS] Peer de destino não encontrado ou offline.');
-        } else {
-            console.error('[PeerJS] Erro crítico não tratado:', err);
-        }
-    });
 }
 
-function handleCallStream(call) {
-    const key = String(call.peer);
-    if (activeCalls[key]) activeCalls[key].close();
-    activeCalls[key] = call;
+async function ensurePeerConnection(remoteId) {
+    const key = String(remoteId);
+    if (activeCalls[key]) return activeCalls[key];
 
-    call.on('stream', remoteStream => {
-        console.log('[PeerJS] Stream recebida de', call.peer,
+    const rtcConfig = await getWebrtcConfig();
+    const pc = new RTCPeerConnection(rtcConfig);
+    activeCalls[key] = pc;
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    pc.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        console.log('[WebRTC] Stream recebida de', key,
             '— audio:', remoteStream.getAudioTracks().length,
             'video:', remoteStream.getVideoTracks().length);
+        renderRemoteParticipant(key, remoteStream);
+    };
 
-        if (remoteStream.getTracks().length === 0) {
-            console.warn('[PeerJS] Stream sem tracks de', call.peer);
-            return;
+    pc.onicecandidate = (event) => {
+        if (!event.candidate) return;
+        sendCallSignal(remoteId, 'webrtc_ice', { candidate: event.candidate }, callSourceId);
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+            console.warn('[WebRTC] Conexão falhou com', key);
+            removeRemoteParticipant(key);
         }
-        renderRemoteParticipant(call.peer, remoteStream, call.metadata);
-    });
+        if (pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+            removeRemoteParticipant(key);
+        }
+    };
 
-    call.on('close', () => removeRemoteParticipant(call.peer));
-    call.on('error', err => {
-        console.error('[PeerJS] Erro de rede com', call.peer, err);
-        removeRemoteParticipant(call.peer);
-    });
+    return pc;
+}
+
+async function createAndSendOffer(remoteId) {
+    const pc = await ensurePeerConnection(remoteId);
+    if (pc.signalingState !== 'stable') return;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await sendCallSignal(remoteId, 'webrtc_offer', { sdp: offer }, callSourceId);
+}
+
+async function handleWebrtcOffer(remoteId, sdp) {
+    if (!isInCall) return;
+    const key = String(remoteId);
+    const pc = await ensurePeerConnection(remoteId);
+
+    if (pc.signalingState !== 'stable') {
+        try {
+            await pc.setLocalDescription({ type: 'rollback' });
+        } catch (e) {
+            console.warn('[WebRTC] Rollback falhou para', key, e);
+        }
+    }
+
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+    if (pendingIceCandidates[key]?.length) {
+        for (const c of pendingIceCandidates[key]) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { console.warn(e); }
+        }
+        pendingIceCandidates[key] = [];
+    }
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await sendCallSignal(remoteId, 'webrtc_answer', { sdp: answer }, callSourceId);
+}
+
+async function handleWebrtcAnswer(remoteId, sdp) {
+    const key = String(remoteId);
+    const pc = activeCalls[key];
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    if (pendingIceCandidates[key]?.length) {
+        for (const c of pendingIceCandidates[key]) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { console.warn(e); }
+        }
+        pendingIceCandidates[key] = [];
+    }
+}
+
+async function handleWebrtcIce(remoteId, candidate) {
+    const key = String(remoteId);
+    const pc = activeCalls[key] || await ensurePeerConnection(remoteId);
+
+    if (!pc.remoteDescription) {
+        if (!pendingIceCandidates[key]) pendingIceCandidates[key] = [];
+        pendingIceCandidates[key].push(candidate);
+        return;
+    }
+
+    try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+        console.warn('[WebRTC] Falha ao adicionar ICE candidate', e);
+    }
 }
 
 // ============================================================================
@@ -448,15 +395,6 @@ async function getLocalMedia() {
 
         updateLocalVideo();
 
-        // Answer any PeerJS calls that arrived before media was ready
-        if (pendingCalls.length > 0) {
-            pendingCalls.forEach(pendingCall => {
-                pendingCall.answer(localStream);
-                handleCallStream(pendingCall);
-            });
-            pendingCalls = [];
-        }
-
         return true;
     } catch (err) {
         console.error('[WebRTC] Falha ao capturar media:', err);
@@ -474,6 +412,8 @@ async function getLocalMedia() {
 // ============================================================================
 function showCallUI() {
     document.getElementById('chatMessages').classList.add('hidden');
+    const title = document.getElementById('callRoomTitle');
+    if (title) title.textContent = window.conversaAtual?.nome ? `Sala • ${window.conversaAtual.nome}` : 'Sala TocaChat';
     document.getElementById('chatInputArea').classList.add('hidden');
     const inlineView = document.getElementById('callInlineView');
     if (inlineView) inlineView.classList.remove('hidden');
@@ -554,6 +494,8 @@ function updateLocalVideo() {
 function updateCallStatusText(text) {
     const el = document.getElementById('callStatus');
     if (el) el.textContent = text;
+    const hint = document.getElementById('callActiveHint');
+    if (hint) hint.textContent = text || 'Toque para voltar';
 }
 
 // ============================================================================
@@ -564,9 +506,15 @@ function updateGridLayout() {
     if (!grid) return;
     const count = grid.children.length;
     grid.className = 'call-participants-grid';
-    if (count === 1) grid.classList.add('grid-1');
+    if (count === 0) grid.classList.add('grid-empty');
+    else if (count === 1) grid.classList.add('grid-1');
     else if (count === 2) grid.classList.add('grid-2');
-    else if (count > 2) grid.classList.add('grid-n');
+    else if (count <= 4) grid.classList.add('grid-4');
+    else grid.classList.add('grid-n');
+
+    const totalParticipants = count + (isInCall ? 1 : 0);
+    const meta = document.getElementById('callInlineMeta');
+    if (meta) meta.textContent = `${totalParticipants} participante${totalParticipants === 1 ? '' : 's'}`;
 }
 
 function renderRemoteParticipant(participantId, stream, metadata = null) {
@@ -594,7 +542,11 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
             <div class="remote-avatar" id="avatar-${participantId}">
                 ${getAvatarHtml(participantId, fallbackName, fallbackPhoto)}
             </div>
-            <div class="remote-label">${fallbackName}</div>
+            <div class="remote-gradient"></div>
+            <div class="remote-meta">
+                <div class="remote-label">${fallbackName}</div>
+                <span class="remote-pill">Ao vivo</span>
+            </div>
         `;
         grid.appendChild(container);
     }
@@ -660,11 +612,12 @@ async function startCall() {
 
     // Mark as ringing
     isRinging = true;
+    isCallInitiator = true;
     markParticipantInCall(currentUser.id, true);
 
-    // Pre-initialise PeerJS and local media in the background
-    initPeer();
+    // Pré-aquecer mídia e ICE em background
     getLocalMedia(); // non-blocking pre-warm
+    getWebrtcConfig();
 
     // Show the "Chamando..." overlay
     const targetName = others.length === 1 ? others[0].nome : `${others.length} pessoas`;
@@ -718,17 +671,6 @@ function _cancelRingTimeout() {
     if (ringTimeout) { clearTimeout(ringTimeout); ringTimeout = null; }
 }
 
-// Wait until peer is open (or timeout)
-function waitForPeer(timeoutMs = 10000) {
-    return new Promise(resolve => {
-        if (peer && peer.open) { resolve(true); return; }
-        const start = Date.now();
-        const interval = setInterval(() => {
-            if (peer && peer.open) { clearInterval(interval); resolve(true); return; }
-            if (Date.now() - start > timeoutMs) { clearInterval(interval); resolve(false); }
-        }, 200);
-    });
-}
 
 // ============================================================================
 //  ▶  _enterCall() — shared by CALLER (after ring_accept) and CALLEE (after accept button)
@@ -745,10 +687,10 @@ async function _enterCall() {
     showCallUI();
     updateCallStatusText('Conectando dispositivos...');
 
-    // Ensure PeerJS is initialised and get media in parallel
+    // Inicializa mídia local e ICE/TURN
     const [hasMedia] = await Promise.all([
         getLocalMedia(),
-        initPeer()
+        getWebrtcConfig()
     ]);
 
     if (!hasMedia || !localStream) {
@@ -757,12 +699,7 @@ async function _enterCall() {
         return;
     }
 
-    // Wait for PeerJS to be ready (up to 10 s)
     updateCallStatusText('Conectando ao servidor de chamadas...');
-    const peerReady = await waitForPeer(10000);
-    if (!peerReady) {
-        console.warn('[PeerJS] Timeout aguardando conexão — tentando mesmo assim');
-    }
     updateCallStatusText('Na chamada');
     isJoined = true;
 
@@ -776,23 +713,21 @@ async function _enterCall() {
             sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
         });
 
-        // Attempt PeerJS mesh connections
+        // Só o iniciador cria ofertas para evitar glare (offer collision)
         const attemptCallToOthers = async () => {
-            if (!peer || !peer.open) { console.log('[PeerJS] Aguardando peer...'); return; }
+            if (!isCallInitiator) return;
             for (const m of others) {
                 const key = String(m.id);
                 if (activeCalls[key]) continue;
 
-                console.log(`[PeerJS] Iniciando chamada para ${m.nome} (${key})`);
-                const call = peer.call(key, localStream, {
-                    metadata: { isMuted, isCameraOn }
-                });
-                if (call) handleCallStream(call);
+                console.log(`[WebRTC] Iniciando oferta para ${m.nome} (${key})`);
+                await createAndSendOffer(key);
+                sendCallSignal(m.id, 'state', { isMuted, isCameraOn }, callSourceId);
             }
         };
 
         const tryConnect = () => {
-            if (!isInCall || !peer || !localStream || !window.conversaAtual) return;
+            if (!isInCall || !localStream || !window.conversaAtual) return;
             attemptCallToOthers();
         };
 
@@ -820,6 +755,7 @@ async function joinCall() {
 
         // Let caller know we accepted (they will call _enterCall on their side)
         await sendCallSignal(caller.id, 'ring_accept', {}, callSourceId);
+        isCallInitiator = false;
 
         // Also ensure we are in the right conversation context
         if (!window.conversaAtual || window.conversaAtual.id !== callConv.id) {
@@ -828,6 +764,7 @@ async function joinCall() {
     } else {
         // Direct join (e.g. joining an already-active call)
         callSourceId = window.conversaAtual?.id ?? null;
+        isCallInitiator = true;
         window.callSourceId = callSourceId;
         if (!callSourceId) {
             showToast('Erro: conversa não identificada.', 'error');
@@ -856,13 +793,10 @@ async function endCall(sendSignal = true) {
     }
 
     // Cleanup
-    reconnectAttempts = 0;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    pendingCalls = [];
     if (callRetryInterval) { clearInterval(callRetryInterval); callRetryInterval = null; }
 
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-    Object.values(activeCalls).forEach(call => call.close());
+    Object.values(activeCalls).forEach(pc => pc.close());
     activeCalls = {};
 
     isInCall = false;
@@ -906,16 +840,19 @@ async function toggleCamera() {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
             }
 
-            Object.values(activeCalls).forEach(call => {
-                if (call.peerConnection) {
-                    const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'video');
-                    if (sender) sender.replaceTrack(videoTrack).catch(e => console.error(e));
-                    else if (call.peerConnection.signalingState !== 'closed') call.peerConnection.addTrack(videoTrack, localStream);
-                }
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) sender.replaceTrack(videoTrack).catch(e => console.error(e));
+                else if (pc.signalingState !== 'closed') pc.addTrack(videoTrack, localStream);
             });
 
             const localVid = document.getElementById('localVideo');
             if (localVid) localVid.srcObject = localStream;
+        } else {
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) sender.replaceTrack(null).catch(e => console.error(e));
+            });
         }
 
         updateControlsUI();
@@ -968,11 +905,9 @@ async function switchMicrophone(deviceId, label) {
             localStream.getAudioTracks().forEach(t => { t.stop(); localStream.removeTrack(t); });
             localStream.addTrack(newAudioTrack);
             if (isMuted) newAudioTrack.enabled = false;
-            Object.values(activeCalls).forEach(call => {
-                if (call.peerConnection) {
-                    const sender = call.peerConnection.getSenders().find(s => s.track?.kind === 'audio');
-                    if (sender) sender.replaceTrack(newAudioTrack).catch(e => console.warn(e));
-                }
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+                if (sender) sender.replaceTrack(newAudioTrack).catch(e => console.warn(e));
             });
         }
         showToast(`Microfone: ${label}`, 'success');
@@ -1027,7 +962,7 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
 
     const overlay = document.createElement('div');
     overlay.id = 'callingOverlay';
-    overlay.className = 'incoming-call-overlay'; // reuse same styles
+    overlay.className = 'incoming-call-overlay';
 
     const photoHtml = targetPhoto
         ? `<img src="${targetPhoto}" alt="${targetName}" class="incoming-call-avatar-img">`
@@ -1035,19 +970,17 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
 
     overlay.innerHTML = `
         <div class="incoming-call-backdrop"></div>
-        <div class="incoming-call-card">
-            <div class="incoming-call-ring-effect"></div>
+        <div class="incoming-call-card outgoing-mode">
+            <div class="incoming-call-chip">Chamando agora</div>
             <div class="incoming-call-avatar">${photoHtml}</div>
             <div class="incoming-call-info">
                 <h3 class="incoming-call-name">${targetName}</h3>
-                <p class="incoming-call-subtitle">Chamando…</p>
-                <p class="incoming-call-type" id="callingDots">📞 ●○○</p>
+                <p class="incoming-call-subtitle">Aguardando resposta</p>
+                <p class="incoming-call-type" id="callingDots">Conectando ●○○</p>
             </div>
-            <div class="incoming-call-actions">
+            <div class="incoming-call-actions single-action">
                 <button class="incoming-call-btn incoming-call-decline" id="btnCancelCall" title="Cancelar">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
             </div>
         </div>
@@ -1056,26 +989,21 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
     document.body.appendChild(overlay);
     requestAnimationFrame(() => overlay.classList.add('visible'));
 
-    document.getElementById('btnCancelCall').onclick = () => {
-        if (onCancel) onCancel();
-    };
+    const btn = document.getElementById('btnCancelCall');
+    if (btn) btn.onclick = onCancel;
 
-    // Animated dots: ●○○ → ○●○ → ○○●
-    let dotStep = 0;
+    let dots = 0;
     const dotsEl = document.getElementById('callingDots');
-    const patterns = ['📞 ●○○', '📞 ○●○', '📞 ○○●'];
-    const dotTimer = setInterval(() => {
-        if (!dotsEl || !dotsEl.isConnected) { clearInterval(dotTimer); return; }
-        dotStep = (dotStep + 1) % patterns.length;
-        dotsEl.textContent = patterns[dotStep];
-    }, 600);
-    overlay._dotTimer = dotTimer;
+    overlay._dotsTimer = setInterval(() => {
+        dots = (dots + 1) % 4;
+        if (dotsEl) dotsEl.textContent = `Conectando ${'●'.repeat(dots)}${'○'.repeat(3 - dots)}`;
+    }, 500);
 }
 
 function dismissCallingOverlay() {
     const overlay = document.getElementById('callingOverlay');
     if (overlay) {
-        if (overlay._dotTimer) clearInterval(overlay._dotTimer);
+        if (overlay._dotsTimer) clearInterval(overlay._dotsTimer);
         overlay.classList.remove('visible');
         setTimeout(() => overlay.remove(), 300);
     }
@@ -1100,13 +1028,13 @@ function showIncomingCallAlert(callConv, callerMember, dados) {
 
     overlay.innerHTML = `
         <div class="incoming-call-backdrop" onclick="dismissIncomingCall()"></div>
-        <div class="incoming-call-card">
+        <div class="incoming-call-card incoming-mode">
             <div class="incoming-call-ring-effect"></div>
             <div class="incoming-call-avatar">${callerPhoto}</div>
             <div class="incoming-call-info">
                 <h3 class="incoming-call-name">${callerMember.nome}</h3>
                 <p class="incoming-call-subtitle">${subtitle}</p>
-                <p class="incoming-call-type">📞 Chamada de vídeo/voz</p>
+                <p class="incoming-call-type">Ligação recebida agora</p>
             </div>
             <div class="incoming-call-actions">
                 <button class="incoming-call-btn incoming-call-accept" id="btnAcceptCall" title="Atender">
@@ -1157,6 +1085,11 @@ function dismissIncomingCall() {
 // ============================================================================
 //  Event bindings
 // ============================================================================
+window.startCall = startCall;
+window.joinCall = joinCall;
+window.endCall = endCall;
+window.toggleCamera = toggleCamera;
+
 window.addEventListener('DOMContentLoaded', () => {
 
     // 📞 Audio call button — now calls startCall()

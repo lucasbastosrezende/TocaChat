@@ -293,10 +293,9 @@ async function abrirConversa(id) {
         avatarEl.onclick = null;
     }
 
-    // Show unified call button
+    // Show call buttons (handlers are managed in call.js)
     document.getElementById('btnCallAudio').classList.remove('hidden');
-    document.getElementById('btnCallAudio').onclick = () => joinCall();
-    document.getElementById('btnCallVideo').classList.add('hidden'); // Hidden — camera toggles inside call
+    document.getElementById('btnCallVideo').classList.remove('hidden');
 
     const subtitle = conv.tipo === 'grupo'
         ? `${(conv.membros ? conv.membros.length : 0)} membros${conv.descricao ? ' • ' + conv.descricao : ''}`
