@@ -376,6 +376,8 @@ async function getLocalMedia() {
 // ============================================================================
 function showCallUI() {
     document.getElementById('chatMessages').classList.add('hidden');
+    const title = document.getElementById('callRoomTitle');
+    if (title) title.textContent = window.conversaAtual?.nome ? `Sala • ${window.conversaAtual.nome}` : 'Sala TocaChat';
     document.getElementById('chatInputArea').classList.add('hidden');
     const inlineView = document.getElementById('callInlineView');
     if (inlineView) inlineView.classList.remove('hidden');
@@ -456,6 +458,8 @@ function updateLocalVideo() {
 function updateCallStatusText(text) {
     const el = document.getElementById('callStatus');
     if (el) el.textContent = text;
+    const hint = document.getElementById('callActiveHint');
+    if (hint) hint.textContent = text || 'Toque para voltar';
 }
 
 // ============================================================================
@@ -466,9 +470,15 @@ function updateGridLayout() {
     if (!grid) return;
     const count = grid.children.length;
     grid.className = 'call-participants-grid';
-    if (count === 1) grid.classList.add('grid-1');
+    if (count === 0) grid.classList.add('grid-empty');
+    else if (count === 1) grid.classList.add('grid-1');
     else if (count === 2) grid.classList.add('grid-2');
-    else if (count > 2) grid.classList.add('grid-n');
+    else if (count <= 4) grid.classList.add('grid-4');
+    else grid.classList.add('grid-n');
+
+    const totalParticipants = count + (isInCall ? 1 : 0);
+    const meta = document.getElementById('callInlineMeta');
+    if (meta) meta.textContent = `${totalParticipants} participante${totalParticipants === 1 ? '' : 's'}`;
 }
 
 function renderRemoteParticipant(participantId, stream, metadata = null) {
@@ -496,7 +506,11 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
             <div class="remote-avatar" id="avatar-${participantId}">
                 ${getAvatarHtml(participantId, fallbackName, fallbackPhoto)}
             </div>
-            <div class="remote-label">${fallbackName}</div>
+            <div class="remote-gradient"></div>
+            <div class="remote-meta">
+                <div class="remote-label">${fallbackName}</div>
+                <span class="remote-pill">Ao vivo</span>
+            </div>
         `;
         grid.appendChild(container);
     }
@@ -903,7 +917,7 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
 
     const overlay = document.createElement('div');
     overlay.id = 'callingOverlay';
-    overlay.className = 'incoming-call-overlay'; // reuse same styles
+    overlay.className = 'incoming-call-overlay';
 
     const photoHtml = targetPhoto
         ? `<img src="${targetPhoto}" alt="${targetName}" class="incoming-call-avatar-img">`
@@ -911,19 +925,17 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
 
     overlay.innerHTML = `
         <div class="incoming-call-backdrop"></div>
-        <div class="incoming-call-card">
-            <div class="incoming-call-ring-effect"></div>
+        <div class="incoming-call-card outgoing-mode">
+            <div class="incoming-call-chip">Chamando agora</div>
             <div class="incoming-call-avatar">${photoHtml}</div>
             <div class="incoming-call-info">
                 <h3 class="incoming-call-name">${targetName}</h3>
-                <p class="incoming-call-subtitle">Chamando…</p>
-                <p class="incoming-call-type" id="callingDots">📞 ●○○</p>
+                <p class="incoming-call-subtitle">Aguardando resposta</p>
+                <p class="incoming-call-type" id="callingDots">Conectando ●○○</p>
             </div>
-            <div class="incoming-call-actions">
+            <div class="incoming-call-actions single-action">
                 <button class="incoming-call-btn incoming-call-decline" id="btnCancelCall" title="Cancelar">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
             </div>
         </div>
@@ -932,26 +944,21 @@ function showCallingOverlay(targetName, targetPhoto, onCancel) {
     document.body.appendChild(overlay);
     requestAnimationFrame(() => overlay.classList.add('visible'));
 
-    document.getElementById('btnCancelCall').onclick = () => {
-        if (onCancel) onCancel();
-    };
+    const btn = document.getElementById('btnCancelCall');
+    if (btn) btn.onclick = onCancel;
 
-    // Animated dots: ●○○ → ○●○ → ○○●
-    let dotStep = 0;
+    let dots = 0;
     const dotsEl = document.getElementById('callingDots');
-    const patterns = ['📞 ●○○', '📞 ○●○', '📞 ○○●'];
-    const dotTimer = setInterval(() => {
-        if (!dotsEl || !dotsEl.isConnected) { clearInterval(dotTimer); return; }
-        dotStep = (dotStep + 1) % patterns.length;
-        dotsEl.textContent = patterns[dotStep];
-    }, 600);
-    overlay._dotTimer = dotTimer;
+    overlay._dotsTimer = setInterval(() => {
+        dots = (dots + 1) % 4;
+        if (dotsEl) dotsEl.textContent = `Conectando ${'●'.repeat(dots)}${'○'.repeat(3 - dots)}`;
+    }, 500);
 }
 
 function dismissCallingOverlay() {
     const overlay = document.getElementById('callingOverlay');
     if (overlay) {
-        if (overlay._dotTimer) clearInterval(overlay._dotTimer);
+        if (overlay._dotsTimer) clearInterval(overlay._dotsTimer);
         overlay.classList.remove('visible');
         setTimeout(() => overlay.remove(), 300);
     }
@@ -976,13 +983,13 @@ function showIncomingCallAlert(callConv, callerMember, dados) {
 
     overlay.innerHTML = `
         <div class="incoming-call-backdrop" onclick="dismissIncomingCall()"></div>
-        <div class="incoming-call-card">
+        <div class="incoming-call-card incoming-mode">
             <div class="incoming-call-ring-effect"></div>
             <div class="incoming-call-avatar">${callerPhoto}</div>
             <div class="incoming-call-info">
                 <h3 class="incoming-call-name">${callerMember.nome}</h3>
                 <p class="incoming-call-subtitle">${subtitle}</p>
-                <p class="incoming-call-type">📞 Chamada de vídeo/voz</p>
+                <p class="incoming-call-type">Ligação recebida agora</p>
             </div>
             <div class="incoming-call-actions">
                 <button class="incoming-call-btn incoming-call-accept" id="btnAcceptCall" title="Atender">
